@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.10.0
-// @description  Khan Academy solver with stable interaction detection and accurate multiple-choice graph handling.
+// @version      4.10.1
+// @description  Khan Academy solver with stable dropdown/drag state and accurate graph multiple-choice detection.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -86,7 +86,11 @@
       '.perseus-widget-dropdown', '.perseus-widget-orderer button', '.perseus-widget-orderer [role="button"]',
       '[data-testid*="orderer" i] button', '[data-testid*="orderer" i] [role="button"]',
       '[role="option"]', '[role="listbox"]', '[aria-haspopup="listbox"]',
+      '.perseus-widget-orderer button', '.perseus-widget-orderer [role="button"]',
+      '[data-testid*="orderer" i] button', '[data-testid*="orderer" i] [role="button"]',
       '[draggable="true"]', '[aria-roledescription*="draggable" i]', '[data-rbd-draggable-id]',
+      '[data-testid*="draggable" i]', '[data-testid*="drag-item" i]', '[data-testid*="sortable-item" i]',
+      '[class*="draggable-item" i]', '[class*="drag-item" i]', '[class*="sortable-item" i]',
       '[data-droppable-id]', '[data-drop-zone]', '[aria-dropeffect]',
       '[data-testid*="drop-target" i]', '[data-testid*="dropzone" i]',
       '[data-testid*="drop-zone" i]', '[class*="droppable" i]', '[class*="drop-target" i]',
@@ -346,7 +350,10 @@
 
     // A rendered Graphie can be static question context. Only a real interactive-graph
     // widget or an explicit graph-input control is permission to draw a graph preview.
-    const explicitGraph = !choiceTask && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
+    // A radio group also signals a choose-an-answer task, even if unusual DOM markup prevents
+    // extracting every option label cleanly.
+    const choiceContainerPresent = !!root.querySelector('.perseus-widget-radio, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i]');
+    const explicitGraph = !choiceTask && !choiceContainerPresent && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
     const gridElement = root.querySelector('.perseus-widget-matrix, [role="grid"]');
     const explicitMatrix = !!gridElement;
     const gridCellNodes = gridElement ? [...gridElement.querySelectorAll('[role="gridcell"], [class*="cell"]')].filter(visible).filter(el => ![...el.querySelectorAll('[role="gridcell"], [class*="cell"]')].some(child => visible(child))) : [];
@@ -421,7 +428,7 @@
       })),
       // Do not fingerprint labels or counts from the draggable bank: these change after each drop.
       drag: { present: dragWidgetPresent, orderWidgetPresent, mode: dragWidgetPresent ? dragDrop.mode : '' },
-      layoutEvidence: { explicitGraph, explicitMatrix, gridCells, gridRows, gridCols, editableTable },
+      layoutEvidence: { explicitGraph, explicitMatrix, gridCells, gridRows, gridCols, editableTable, choiceContainerPresent },
     }).slice(0, 16000);
 
     return {
