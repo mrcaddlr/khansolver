@@ -1,12 +1,20 @@
 # KA Visual Solver
 
-Current version: **v4.12.1**.
+Current version: **v4.13.0**.
 
 A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big Pickle** for a solution, then displays the result in a small panel. It supports multiple-choice, mixed questions, answer fields, tables, drag-and-drop previews, and image-assisted questions.
 
 > **Important:** This script displays suggested answers. It does not click answer choices or submit Khan Academy exercises for you. AI answers can be wrong; verify them before relying on them.
 
 ## Features
+
+- Question identity is based on the stable stem and structure, ignoring live dropdown values and drag/drop placements to avoid clearing solutions during interaction.
+
+- A four-minute request watchdog ends stuck solves with a retry message instead of leaving the panel loading indefinitely.
+
+- If Big Pickle explains a multiple-choice answer without returning its index, the script attempts to recover the option letter (including references such as “data set B”).
+
+- Every solution includes a dedicated **FINAL ANSWER** section at the bottom, separate from the explanation. The prompt requires both `finalAnswer` and `answer` fields.
 
 - A pinned solver panel on Khan Academy and classroom.khanacademy.org.
 - OpenCode's local HTTP server at `http://127.0.0.1:4096` by default.
