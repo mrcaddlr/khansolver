@@ -1121,40 +1121,103 @@
   }
 
   async function imageFiles(q){
-    const files=[];let total=0;let montageAdded=false;
+    const files=[];
+    let total=0;
+    let montageAdded=false;
+    let montageFailed=false;
+    let failedImages=0;
+    let skippedForSize=0;
+    const sourceImageCount=(q.visuals||[]).filter(x=>x.kind==='image'&&x.src&&(x.width>=45||x.height>=45)).length;
+    const bytesOf=file=>Math.floor(((file?.url||'').split(',')[1]||'').length*.75);
+    const addFile=file=>{
+      if(!file)return false;
+      const bytes=bytesOf(file);
+      if(!bytes||bytes>MAX_IMAGE_BYTES||total+bytes>5200000){skippedForSize++;return false;}
+      files.push(file);total+=bytes;return true;
+    };
+
+    // Prefer one labeled montage for visual choices so every option stays in view and readable.
     if(q.hasVisualChoices){
       const montage=await choiceVisualMontage(q);
-      const size=montage?Math.floor((montage.split(',')[1]||'').length*.75):0;
-      if(montage&&size<=MAX_IMAGE_BYTES&&size<=5200000){
-        files.push({type:'file',mime:'image/png',filename:'ka-visual-choice-montage.png',url:montage});
-        total+=size;montageAdded=true;
-      }
+      const file=montage?await normalizeImageSource(montage,'ka-visual-choice-montage'):null;
+      if(file&&addFile(file))montageAdded=true;
+      else montageFailed=true;
     }
+
     const choiceImageSources=new Set(montageAdded?(q.choiceNodes||[]).flatMap(node=>[...node.querySelectorAll('img')].map(img=>img.currentSrc||img.src)):[]);
-    const images=q.visuals.filter(x=>x.kind==='image'&&x.src&&(x.width>=45||x.height>=45)&&!choiceImageSources.has(x.src)).sort((a,b)=>b.width*b.height-a.width*a.height).slice(0,Math.max(0,MAX_IMAGES-files.length));
-    for(let i=0;i<images.length;i++){const f=await loadImage(images[i].src,i);if(!f)continue;const bytes=Math.floor((f.url.split(',')[1]||'').length*.75);if(total+bytes>5200000)continue;total+=bytes;files.push(f);}
-    // Canvas-backed diagrams often contain the only meaningful visual labels/relationships.
-    if(q.root&&files.length<MAX_IMAGES){
-      for(const canvas of [...q.root.querySelectorAll('canvas')].filter(visible).filter(canvas=>!montageAdded||(q.choiceNodes||[]).every(node=>!node.contains(canvas))).slice(0,2)){
-        if(files.length>=MAX_IMAGES)break;
-        try{const url=canvas.toDataURL('image/png');const payload=url.split(',')[1]||'';const bytes=Math.floor(payload.length*.75);if(!payload||bytes>MAX_IMAGE_BYTES||total+bytes>5200000)continue;files.push({type:'file',mime:'image/png',filename:`ka-question-canvas-${files.length+1}.png`,url});total+=bytes;}catch(_){}
-      }
+    const images=(q.visuals||[])
+      .filter(x=>x.kind==='image'&&x.src&&(x.width>=45||x.height>=45)&&!choiceImageSources.has(x.src))
+      .sort((a,b)=>b.width*b.height-a.width*a.height)
+      .slice(0,Math.max(0,MAX_IMAGES-files.length));
+    for(let i=0;i<images.length&&files.length<MAX_IMAGES;i++){
+      const file=await loadImage(images[i].src,i);
+      if(!file){failedImages++;continue;}
+      addFile(file);
     }
-    // Attach inline SVG diagrams as PNGs too, so the model gets pixels rather than labels alone.
+
+    // Preserve canvas diagrams; normalize oversized canvases instead of discarding them.
     if(q.root&&files.length<MAX_IMAGES){
-      for(const svg of [...q.root.querySelectorAll('svg')].filter(visible).filter(svg=>!montageAdded||(q.choiceNodes||[]).every(node=>!node.contains(svg))).slice(0,3)){
+      const canvases=[...q.root.querySelectorAll('canvas')].filter(visible)
+        .filter(canvas=>!montageAdded||(q.choiceNodes||[]).every(node=>!node.contains(canvas))).slice(0,2);
+      for(const canvas of canvases){
         if(files.length>=MAX_IMAGES)break;
         try{
-          const clone=svg.cloneNode(true);if(!clone.getAttribute('xmlns'))clone.setAttribute('xmlns','http://www.w3.org/2000/svg');
-          const serialized=new XMLSerializer().serializeToString(clone);const blob=new Blob([serialized],{type:'image/svg+xml;charset=utf-8'});const objectUrl=URL.createObjectURL(blob);
-          const png=await new Promise(resolve=>{const image=new Image();image.onload=()=>{try{const rect=svg.getBoundingClientRect();const scale=Math.min(2,1200/Math.max(1,rect.width,rect.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(rect.width*scale));canvas.height=Math.max(1,Math.round(rect.height*scale));const ctx=canvas.getContext('2d');ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL('image/png'));}catch(_){resolve('');}finally{URL.revokeObjectURL(objectUrl);}};image.onerror=()=>{URL.revokeObjectURL(objectUrl);resolve('');};image.src=objectUrl;});
-          const payload=png.split(',')[1]||'',bytes=Math.floor(payload.length*.75);if(payload&&bytes<=MAX_IMAGE_BYTES&&total+bytes<=5200000){files.push({type:'file',mime:'image/png',filename:`ka-question-diagram-${files.length+1}.png`,url:png});total+=bytes;}
-        }catch(_){}
+          const url=canvas.toDataURL('image/png');
+          const file=await normalizeImageSource(url,'ka-question-canvas-'+(files.length+1));
+          if(!file)failedImages++;
+          else addFile(file);
+        }catch(_){failedImages++;}
       }
     }
-    const nonChoiceImages=q.visuals.filter(x=>x.kind==='image'&&(!montageAdded||!choiceImageSources.has(x.src)));
-    const missing=nonChoiceImages.length-files.filter(x=>/^ka-question-\d+/.test(x.filename)).length;
-    return{files,warning:missing>0?'Some question images could not be attached; image-dependent details may be unavailable.':''};
+
+    // SVG axes, labels and geometry may be absent from alt text, so rasterize the actual rendered SVG.
+    if(q.root&&files.length<MAX_IMAGES){
+      const svgs=[...q.root.querySelectorAll('svg')].filter(visible)
+        .filter(svg=>!montageAdded||(q.choiceNodes||[]).every(node=>!node.contains(svg))).slice(0,3);
+      for(const svg of svgs){
+        if(files.length>=MAX_IMAGES)break;
+        try{
+          const clone=svg.cloneNode(true);
+          if(!clone.getAttribute('xmlns'))clone.setAttribute('xmlns','http://www.w3.org/2000/svg');
+          const rect=svg.getBoundingClientRect();
+          const serialized=new XMLSerializer().serializeToString(clone);
+          const blob=new Blob([serialized],{type:'image/svg+xml;charset=utf-8'});
+          const objectUrl=URL.createObjectURL(blob);
+          const png=await new Promise(resolve=>{
+            const image=new Image();
+            image.onload=()=>{
+              try{
+                const scale=Math.min(2,1400/Math.max(1,rect.width,rect.height));
+                const canvas=document.createElement('canvas');
+                canvas.width=Math.max(1,Math.round(rect.width*scale));
+                canvas.height=Math.max(1,Math.round(rect.height*scale));
+                const ctx=canvas.getContext('2d');
+                if(!ctx)return resolve('');
+                ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);
+                ctx.drawImage(image,0,0,canvas.width,canvas.height);
+                resolve(canvas.toDataURL('image/png'));
+              }catch(_){resolve('');}
+              finally{URL.revokeObjectURL(objectUrl);}
+            };
+            image.onerror=()=>{URL.revokeObjectURL(objectUrl);resolve('');};
+            image.src=objectUrl;
+          });
+          const file=png?await normalizeImageSource(png,'ka-question-diagram-'+(files.length+1)):null;
+          if(!file)failedImages++;
+          else addFile(file);
+        }catch(_){failedImages++;}
+      }
+    }
+
+    const warnings=[];
+    if(montageFailed)warnings.push('The visual-choice montage could not be captured; some pictured options may not be attached.');
+    if(failedImages)warnings.push(failedImages+' visual item(s) could not be converted to an image attachment.');
+    if(skippedForSize)warnings.push(skippedForSize+' visual item(s) were skipped because the attachment size limit was reached.');
+    if(sourceImageCount>files.length&&!montageAdded&&q.hasVisualChoices)warnings.push('The solver detected pictured answer choices but could not confirm all options were included in the image attachments.');
+    if(sourceImageCount>0&&!files.length)warnings.push('Question images were detected, but none could be attached; image-dependent answers may be unreliable.');
+    const warning=warnings.join(' ');
+    const captureReport='Visual capture: '+files.length+' image file(s) attached'+(files.length?(' ('+files.map(x=>x.filename).join(', ')+')'):'')+'. '+(warning||'No visual attachment errors detected.');
+    return {files,warning,captureReport,visualCount:sourceImageCount};
   }
   function postMessage(base,session,prompt,files,callbacks={}){GM.xmlHttpRequest({method:'POST',url:`${base}/session/${encodeURIComponent(session)}/message`,headers:{'Content-Type':'application/json'},data:JSON.stringify({model:MODEL,system:'Solve Khan Academy exercises accurately. Return only the requested JSON. Treat the page controls as authoritative and never invent an output layout.',parts:[{type:'text',text:prompt},...(files||[]).map(f=>({type:'file',mime:f.mime,filename:f.filename,url:f.url}))]}),timeout:TIMEOUT,onload:callbacks.onload||(()=>{}),onerror:callbacks.onerror||(()=>{}),ontimeout:callbacks.ontimeout||(()=>{})});}
   function deleteSession(base,id){if(!id)return;GM.xmlHttpRequest({method:'DELETE',url:`${base}/session/${encodeURIComponent(id)}`,timeout:5000,onload:()=>{},onerror:()=>{},ontimeout:()=>{}});}
