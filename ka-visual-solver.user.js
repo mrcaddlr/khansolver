@@ -1019,7 +1019,7 @@
   async function choiceVisualMontage(q) {
     const nodes = (q.choiceNodes || []).slice(0, 8);
     if (nodes.length < 2 || !q.hasVisualChoices) return '';
-    const W = 1000, cellW = 490, cellH = 220, gap = 10, cols = 2;
+    const W = 2000, cellW = 980, cellH = 440, gap = 20, cols = 2;
     const rows = Math.ceil(nodes.length / cols);
     const canvas = document.createElement('canvas');
     canvas.width = W;
@@ -1092,14 +1092,14 @@
       ctx.fillStyle = '#fbf9ff';
       ctx.fillRect(x, y, cellW, cellH - gap);
       ctx.strokeStyle = '#d8cfe6'; ctx.lineWidth = 2; ctx.strokeRect(x, y, cellW, cellH - gap);
-      ctx.fillStyle = '#483460'; ctx.font = 'bold 25px sans-serif';
-      ctx.fillText(`Option ${String.fromCharCode(65 + i)}`, x + 14, y + 31);
+      ctx.fillStyle = '#483460'; ctx.font = 'bold 48px sans-serif';
+      ctx.fillText(`Option ${String.fromCharCode(65 + i)}`, x + 28, y + 62);
 
       const visual = option.matches?.('svg,canvas,img') ? option : option.querySelector?.('svg,canvas,img');
       if (visual && visible(visual)) {
         const image = await getVisualImage(visual, i);
         if (image) {
-          const maxW = cellW - 28, maxH = cellH - 65;
+          const maxW = cellW - 56, maxH = cellH - 130;
           const ratio = Math.min(maxW / Math.max(1, image.naturalWidth || image.width), maxH / Math.max(1, image.naturalHeight || image.height));
           const drawW = Math.max(1, (image.naturalWidth || image.width) * ratio);
           const drawH = Math.max(1, (image.naturalHeight || image.height) * ratio);
@@ -1109,8 +1109,10 @@
           } catch (_) {}
         }
       } else {
-        ctx.fillStyle = '#4d4658'; ctx.font = '16px sans-serif';
-        ctx.fillText((q.choices[i] || '').slice(0, 58), x + 14, y + 82, cellW - 28);
+        ctx.fillStyle = '#4d4658'; ctx.font = '28px sans-serif';
+        const words = (q.choices[i] || '').split(/\s+/); let line = '', lineY = y + 110;
+        for (const word of words) { const next = line ? line + ' ' + word : word; if (line && ctx.measureText(next).width > cellW - 56) { ctx.fillText(line, x + 28, lineY); line = word; lineY += 38; if (lineY > y + cellH - 24) break; } else line = next; }
+        if (line && lineY <= y + cellH - 24) ctx.fillText(line, x + 28, lineY);
       }
     }
     if (rendered < 2) return '';
@@ -1221,6 +1223,10 @@
   }
   function postMessage(base,session,prompt,files,callbacks={}){GM.xmlHttpRequest({method:'POST',url:`${base}/session/${encodeURIComponent(session)}/message`,headers:{'Content-Type':'application/json'},data:JSON.stringify({model:MODEL,system:'Solve Khan Academy exercises accurately. Return only the requested JSON. Treat the page controls as authoritative and never invent an output layout.',parts:[{type:'text',text:prompt},...(files||[]).map(f=>({type:'file',mime:f.mime,filename:f.filename,url:f.url}))]}),timeout:TIMEOUT,onload:callbacks.onload||(()=>{}),onerror:callbacks.onerror||(()=>{}),ontimeout:callbacks.ontimeout||(()=>{})});}
   function deleteSession(base,id){if(!id)return;GM.xmlHttpRequest({method:'DELETE',url:`${base}/session/${encodeURIComponent(id)}`,timeout:5000,onload:()=>{},onerror:()=>{},ontimeout:()=>{}});}
+  function claimsImageUnavailable(d) {
+    const text=[d?.finalAnswer,d?.answer,d?.explanation,Array.isArray(d?.steps)?d.steps.join(' '):''].filter(Boolean).join(' ');
+    return /(?:i\s+(?:cannot|can't|am unable to|do not|don't)\s+(?:see|view|access|read|inspect|analy[sz]e)\s+(?:the\s+)?(?:image|picture|diagram|graph|screenshot|visual)|(?:image|picture|diagram|graph)\s+(?:is|was)\s+(?:not\s+(?:attached|provided|available|visible|readable)|too\s+(?:blurry|unclear)|unreadable)|(?:not enough|unable)\s+(?:information|detail)\s+to\s+(?:read|interpret|determine)\s+(?:the\s+)?(?:image|picture|diagram|graph))/i.test(text);
+  }
   function useful(d,q){if(!d||typeof d!=='object')return false;if(norm(d.finalAnswer||d.answer||d.math||''))return true;if(d.correctOptionIndex!==undefined&&d.correctOptionIndex!==null&&d.correctOptionIndex!==''&&Number.isInteger(Number(d.correctOptionIndex)))return true;if(Array.isArray(d.correctOptionIndices)&&d.correctOptionIndices.length)return true;if(Array.isArray(d.inputAnswers)&&d.inputAnswers.length)return true;if(d.table?.fills?.length||d.grid?.selectedCells?.length||d.graph?.points?.length||d.graph?.equation||d.dragDrop?.placements?.length||d.dragDrop?.order?.length)return true;return false;}
   function covers(d,q){if(independentInputs(q).length){const fields=independentInputs(q),items=Array.isArray(d.inputAnswers)?d.inputAnswers:[];const ids=new Set(items.filter(x=>norm(x?.answer??x?.value??x)).map((x,pos)=>Number.isInteger(Number(x?.index))?Number(x.index):(fields[pos]?.index??pos)));if(fields.some(f=>!ids.has(f.index)))return false;}if(q.choices.length>=2){if(q.type==='multi_select'){if(!Array.isArray(d.correctOptionIndices)||!d.correctOptionIndices.length)return false;}else if(idxFor(d,q.choices)<0)return false;}if(q.type==='drag_drop'&&!((d.dragDrop?.placements?.length||0)||(d.dragDrop?.order?.length||0)))return false;if(q.type==='table'&&q.tables.some(t=>t.editableCount>0)&&!d.table?.fills?.length)return false;return true;}
 
@@ -1232,7 +1238,7 @@
     GM.xmlHttpRequest({method:'POST',url:`${base}/session`,headers:{'Content-Type':'application/json'},data:JSON.stringify({title:'KA Visual Solver · verified solution'}),timeout:TIMEOUT,onload:res=>{if(res.status<200||res.status>=300){fail(`OpenCode session creation failed (HTTP ${res.status}). Check the server URL and terminal.`);return;}let p;try{p=JSON.parse(res.responseText||'{}');}catch(_){fail('OpenCode returned an unreadable session response.');return;}session=getSessionId(p);if(!session){fail('OpenCode did not return a session ID. Check the local OpenCode API version.');return;}
       imageFiles(q).then(({files,warning:w,captureReport,visualCount})=>{if(id!==state.requestId){cleanup();return;}warning=w;imageContext={files,warning:w,captureReport,visualCount};$('#result').innerHTML=`<div class="placeholder">Solving with Big Pickle${files.length?` and ${files.length} question image(s)`:''}${state.doubleCheck?' · second-pass verification…':''}</div>`;
         const verify=(candidate,attempt=0)=>{if(!state.doubleCheck){finish(candidate,'skipped','Double-check is disabled; showing the first-pass answer.');return;}const visualDependent=!!q.hasVisualChoices||(q.visuals||[]).some(v=>v.kind==='image'||v.kind==='svg/diagram'||v.kind==='canvas');if(visualDependent&&!(imageContext.files||[]).length){finish(candidate,'failed','Image-dependent double-check was skipped because no image could be attached. The first-pass answer is shown without a vision-based second opinion. '+(imageContext.warning||''));return;}postMessage(base,session,verificationPrompt(q,candidate,imageContext),imageContext.files||[],{onload:r=>{if(id!==state.requestId){cleanup();return;}if(!state.doubleCheck){finish(candidate,'skipped','Double-check was turned off while solving; showing the first-pass answer.');return;}try{let checked=parseResponse(r,'verification');checked=normalizeForRender(checked,q);if(useful(checked,q)&&covers(checked,q))finish(checked,'checked');else if(attempt<1)verify(useful(checked,q)?checked:candidate,attempt+1);else finish(candidate,'failed','The verifier did not return a complete answer for every visible part; showing the first pass.');}catch(e){finish(candidate,'failed',`Second-pass check failed; showing the first pass. ${e.message||e}`);}},onerror:()=>finish(candidate,'failed','Second-pass check could not reach OpenCode; showing the first pass.'),ontimeout:()=>finish(candidate,'failed','Second-pass check timed out; showing the first pass.')});};
-        const solve=(attached,retry=0)=>{let prompt=solverPrompt(q,imageContext);if(retry)prompt+='\n\nRETRY: The previous response was incomplete or failed to use the visual evidence. The image file(s) listed in IMAGE EVIDENCE are attached to this request. Inspect the pixel content carefully, identify the relevant labels/values/relationships, and solve the question rather than claiming you cannot see an attached image. Cross-check the final option/value against the actual visual evidence.';if(warning)prompt+=`\n\nIMAGE NOTE: ${warning} Do not guess image-specific details.`;postMessage(base,session,prompt,attached,{onload:r=>{if(id!==state.requestId){cleanup();return;}let d;try{d=recoverAnswerFromExplanation(parseResponse(r,'solution'),q);}catch(e){if(attached.length&&r.status>=400&&/image|vision|media|attachment|file|unsupported|validation/i.test(`${e.message} ${r.responseText||''}`)){warning='OpenCode could not accept attached images; continued text-only, so image-dependent answers may be unreliable.';solve([],Math.max(1,retry));return;}if(retry<1){solve(attached,retry+1);return;}fail(`Could not read Big Pickle’s response: ${e.message||e}`);return;}if(!useful(d,q)&&retry<1){solve(attached,retry+1);return;}if(!useful(d,q)){fail('Big Pickle returned an incomplete answer twice. Press Solve question to retry.');return;}verify(normalizeForRender(d,q));},onerror:()=>retry<1?solve(attached,retry+1):fail('Could not reach the OpenCode message API. Check that the server is running at the configured URL.'),ontimeout:()=>retry<1?solve(attached,retry+1):fail('Big Pickle timed out twice. Check the OpenCode server, then try again.')});};
+        const solve=(attached,retry=0)=>{let prompt=solverPrompt(q,imageContext);if(retry)prompt+='\n\nRETRY: The previous response was incomplete or failed to use the visual evidence. The image file(s) listed in IMAGE EVIDENCE are attached to this request. Inspect the pixel content carefully, identify the relevant labels/values/relationships, and solve the question rather than claiming you cannot see an attached image. Cross-check the final option/value against the actual visual evidence.';if(warning)prompt+=`\n\nIMAGE NOTE: ${warning} Do not guess image-specific details.`;postMessage(base,session,prompt,attached,{onload:r=>{if(id!==state.requestId){cleanup();return;}let d;try{d=recoverAnswerFromExplanation(parseResponse(r,'solution'),q);}catch(e){if(attached.length&&r.status>=400&&/image|vision|media|attachment|file|unsupported|validation/i.test(`${e.message} ${r.responseText||''}`)){warning='OpenCode could not accept attached images; continued text-only, so image-dependent answers may be unreliable.';solve([],Math.max(1,retry));return;}if(retry<1){solve(attached,retry+1);return;}fail(`Could not read Big Pickle’s response: ${e.message||e}`);return;}if(attached.length&&claimsImageUnavailable(d)&&retry<1){solve(attached,retry+1);return;}if(attached.length&&claimsImageUnavailable(d)&&retry>=1&&((q.choices||[]).length>=2&&idxFor(d,q.choices)<0)){fail('Big Pickle repeatedly reported that it could not interpret the attached image, so the solver refused to trust a guessed option. Check that your OpenCode model supports vision, then retry.');return;}if(!useful(d,q)&&retry<1){solve(attached,retry+1);return;}if(!useful(d,q)){fail('Big Pickle returned an incomplete answer twice. Press Solve question to retry.');return;}if(attached.length&&claimsImageUnavailable(d))warning=[warning,'Big Pickle still reported difficulty reading the attached visual; verify this answer carefully.'].filter(Boolean).join(' ');verify(normalizeForRender(d,q));},onerror:()=>retry<1?solve(attached,retry+1):fail('Could not reach the OpenCode message API. Check that the server is running at the configured URL.'),ontimeout:()=>retry<1?solve(attached,retry+1):fail('Big Pickle timed out twice. Check the OpenCode server, then try again.')});};
         solve(files,0);
       }).catch(e=>fail(`Could not prepare question images: ${e.message||e}`));
     },onerror:()=>fail(`Could not connect to ${base}. Start OpenCode with: opencode serve --hostname 127.0.0.1 --port 4096`),ontimeout:()=>fail('OpenCode did not respond in time. Check that the local server is running.')});
