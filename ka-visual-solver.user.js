@@ -605,23 +605,28 @@
   function recoverAnswerFromExplanation(data, q) {
     const d = data && typeof data === 'object' ? { ...data } : { answer: String(data || '') };
     const explanation = norm(d.explanation || '');
-    if (d.graph && !graphAnswerAllowed(q) && !norm(d.answer || d.math || '') && explanation) {
-      const match = explanation.match(/(?:the\s+)?(?:correct\s+)?(?:answer|result|solution|value|coordinate|point|equation)\s*(?:is|would be|should be|equals?|=|:)\s*([^.;\n]{1,180})/i);
-      if (match) d.answer = norm(match[1]);
-    }
+    if (!norm(d.answer || d.math || '') && norm(d.finalAnswer)) d.answer = norm(d.finalAnswer);
+
+    // Big Pickle sometimes states the correct option in prose but omits its index.
     if ((q.choices || []).length >= 2) {
       let index = idxFor(d, q.choices);
       if (index < 0) {
-        const combined = `${norm(d.answer || '')}\n${explanation}`;
-        const letter = combined.match(/\b(?:the\s+)?(?:correct\s+)?(?:answer|option|choice)\s*(?:is|:|=)?\s*\(?([A-Z])\)?(?=$|[).,:;\s])/i) ||
-          combined.match(/\b(?:option|choice)\s*\(?([A-Z])\)?\s+(?:is|was)\s+(?:the\s+)?(?:correct|best|right)\b/i);
-        if (letter) {
-          const candidate = letter[1].toUpperCase().charCodeAt(0) - 65;
-          if (candidate >= 0 && candidate < q.choices.length) index = candidate;
+        const combined = (norm(d.finalAnswer || '') + '\n' + norm(d.answer || '') + '\n' + explanation).trim();
+        const patterns = [
+          /\b(?:final\s+answer|correct\s+answer|the\s+answer\s+is|answer\s+is|correct\s+option\s+is|option|choice|data\s*set|dataset|set)\s*[:=\-]?\s*(?:option\s+|choice\s+|data\s*set\s+|dataset\s+|set\s+)?\(?([A-Z])\)?\b/i,
+          /\b(?:option|choice|data\s*set|dataset|set)\s*\(?([A-Z])\)?\s+(?:is|would\s+be|matches)\s+(?:the\s+)?(?:correct|best|right)\b/i,
+          /\b([A-Z])\s+(?:is|would\s+be)\s+(?:the\s+)?(?:correct|best|right)\s+(?:answer|choice|data\s*set|dataset)\b/i
+        ];
+        for (const pattern of patterns) {
+          const match = combined.match(pattern);
+          if (match) {
+            const candidate = match[1].toUpperCase().charCodeAt(0) - 65;
+            if (candidate >= 0 && candidate < q.choices.length) { index = candidate; break; }
+          }
         }
         if (index < 0) {
           const ranked = q.choices.map((choice, i) => ({ i, value: norm(choice) }))
-            .filter(x => x.value.length >= 3)
+            .filter(x => x.value.length >= 5)
             .sort((a, b) => b.value.length - a.value.length);
           const lower = combined.toLowerCase();
           const match = ranked.find(x => lower.includes(x.value.toLowerCase()));
@@ -630,11 +635,16 @@
       }
       if (index >= 0) {
         d.correctOptionIndex = index;
-        d.answer = q.choices[index];
+        d.answer = String.fromCharCode(65 + index) + ' — ' + q.choices[index];
+        d.finalAnswer = d.answer;
       }
-    } else if (!norm(d.answer || d.math || '') && q.layout?.choicePromptIntent && explanation) {
-      const match = explanation.match(/(?:the\s+)?(?:correct\s+)?answer\s*(?:is|:|=)\s*([^.;\n]{1,180})/i);
-      if (match) d.answer = norm(match[1]);
+    } else if (!norm(d.answer || d.math || '') && explanation) {
+      const explicit = explanation.match(/(?:FINAL\s+ANSWER|final answer|final result|the answer is|answer is|result is)\s*[:=\-]?\s*([^.;\n]{1,220})/i);
+      if (explicit) d.answer = d.finalAnswer = norm(explicit[1]);
+    }
+    if (d.graph && !graphAnswerAllowed(q) && !norm(d.answer || d.math || '') && explanation) {
+      const match = explanation.match(/(?:the\s+)?(?:correct\s+)?(?:answer|result|solution|value|coordinate|point|equation)\s*(?:is|would be|should be|equals?|=|:)\s*([^.;\n]{1,180})/i);
+      if (match) d.answer = d.finalAnswer = norm(match[1]);
     }
     return d;
   }
