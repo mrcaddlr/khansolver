@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.12.1
-// @description  Khan Academy solver with stricter graph task detection and more stable interactive answers.
+// @version      4.13.0
+// @description  Khan Academy solver with definitive final answers and stable solving while interacting.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -25,6 +25,7 @@
   const MAX_IMAGES = 3;
   const MAX_IMAGE_BYTES = 1800000;
   const MAX_PROMPT_CHARS = 10500;
+  const SOLUTION_WATCHDOG_MS = 240000;
   const SETTING_PREFIX = 'kaVisualSolver.v1.';
 
   function readSetting(key, fallback) {
@@ -41,7 +42,7 @@
 
   const state = {
     serverUrl: DEFAULT_SERVER, auto: false, consented: false,
-    fingerprint: '', question: null, requestId: 0, loading: false,
+    fingerprint: '', coreFingerprint: '', question: null, requestId: 0, loading: false,
     minimized: false, lastError: '',
     doubleCheck: readSetting('doubleCheck', 'true') !== 'false',
     theme: readSetting('theme', 'light') === 'dark' ? 'dark' : 'light',
@@ -487,6 +488,7 @@
       'Solve the exact Khan Academy exercise from this snapshot. Return ONLY one compact valid JSON object; no markdown or prose outside it.',
       'HARD FORMAT CONSTRAINT: DOMPermittedAnswerLayouts is authoritative. Never invent a graph, grid, table, drag/drop task, or answer field that is not explicitly permitted by that object. In particular, if interactiveGraph=false, omit the graph property; if interactiveGrid=false, omit the grid property. A graph/table/grid shown as question context does not automatically mean the student must draw/fill one.',
       'For multiple choice, evaluate each entire option, including all clauses. Select the single option that best answers the whole question; use correctOptionIndex as the zero-based index into answerChoicesInVisibleOrder. Prefer the index over repeating option text. For checkboxes, return all correct indexes in correctOptionIndices.',
+      'DEFINITIVE FINAL ANSWER (REQUIRED): Never leave finalAnswer empty. Never put the only answer inside explanation or steps. Fill BOTH finalAnswer and answer with the concise result. For multiple choice, include the exact letter AND full option text, and set correctOptionIndex to the exact zero-based index. For numerical/algebra questions, give the final value/expression with required units. For table, drag/drop or graph tasks, state the completed entries/placements/points in finalAnswer. Keep reasoning in explanation separately. The rendered solver shows FINAL ANSWER as the last section, so make it definitive and directly usable.',
       'VISUAL CHOICE RULE: if answer choices contain number lines, small graphs, or diagrams, choose among those exact options by index. Do not draw a new Cartesian plane or invent a separate graph unless the DOM confirms an interactive graph-answer control, the question explicitly asks you to graph/plot/draw/place/move something, and no choice-oriented wording or answer-choice group is present.',
       'An image, SVG, canvas, Cartesian plane shown in the prompt, or the model returning a graph object is not sufficient reason to generate a graph preview. If graphActionIntent=false, return the requested answer/option, not a graph property.',
       mixedRule, inputRule,
@@ -494,7 +496,7 @@
       'For calculations, keep unrounded intermediate values, obey requested precision, and use sensible significant figures if none are specified. For measured chemistry results, use precision supported by the measurements; e.g. 19.15 g should become 19.2 g if 3 significant figures are required.',
       'For drag/drop, use only the supplied draggable items and targets. Return each placement with exact item label and targetIndex, or final order with orderIndex. For actual editable tables, use zero-based row/col indexes including headers and fill only editable answer cells. For actual grids use zero-based selectedCells. For actual graphs give points/segments/function as appropriate.',
       'Use the visual attachments and the provided image alt/diagram labels when relevant. Do not claim details from an image that is not attached/readable. Recheck the answer independently before returning it.',
-      'Schema: {"type":"multiple_choice|multi_select|mixed|multi_input|drag_drop|table|grid|graph|math|text|unknown","answer":"short answer","correctOptionIndex":0,"correctOptionIndices":[0,2],"inputAnswers":[{"index":0,"label":"field label","answer":"exact field content"}],"dragDrop":{"mode":"place|order","placements":[{"item":"exact item label","target":"exact target label","targetIndex":0,"orderIndex":0}],"order":["item"]},"table":{"tableIndex":0,"fills":[{"row":1,"col":1,"value":"answer"}]},"grid":{"selectedCells":[[1,2]],"values":[[""]]},"graph":{"xMin":-5,"xMax":5,"yMin":-5,"yMax":5,"equation":"y=...","function":{"kind":"line|quadratic","slope":1,"intercept":0,"a":1,"b":0,"c":0},"points":[{"x":1,"y":2}],"segments":[{"from":[0,0],"to":[2,2]}]},"math":"expression","explanation":"brief explanation","steps":["brief step"],"confidence":"high|medium|low"}',
+      'Schema: {"type":"multiple_choice|multi_select|mixed|multi_input|drag_drop|table|grid|graph|math|text|unknown","finalAnswer":"definitive answer, never empty","answer":"same concise definitive answer, never empty","correctOptionIndex":0,"correctOptionIndices":[0,2],"inputAnswers":[{"index":0,"label":"field label","answer":"exact field content"}],"dragDrop":{"mode":"place|order","placements":[{"item":"exact item label","target":"exact target label","targetIndex":0,"orderIndex":0}],"order":["item"]},"table":{"tableIndex":0,"fills":[{"row":1,"col":1,"value":"answer"}]},"grid":{"selectedCells":[[1,2]],"values":[[""]]},"graph":{"xMin":-5,"xMax":5,"yMin":-5,"yMax":5,"equation":"y=...","function":{"kind":"line|quadratic","slope":1,"intercept":0,"a":1,"b":0,"c":0},"points":[{"x":1,"y":2}],"segments":[{"from":[0,0],"to":[2,2]}]},"math":"expression","explanation":"brief explanation","steps":["brief step"],"confidence":"high|medium|low"}',
       'All choice indexes, table coordinates and grid coordinates are zero-based. For choices, correctOptionIndex must refer to the exact supplied array. If no answer format matches the visible UI, return a concise answer and explain uncertainty rather than inventing a visualization.',
       'SNAPSHOT:', JSON.stringify(payload).slice(0, MAX_PROMPT_CHARS),
     ].join('\n');
@@ -1018,7 +1020,7 @@
   }
   function postMessage(base,session,prompt,files,callbacks={}){GM.xmlHttpRequest({method:'POST',url:`${base}/session/${encodeURIComponent(session)}/message`,headers:{'Content-Type':'application/json'},data:JSON.stringify({model:MODEL,system:'Solve Khan Academy exercises accurately. Return only the requested JSON. Treat the page controls as authoritative and never invent an output layout.',parts:[{type:'text',text:prompt},...(files||[]).map(f=>({type:'file',mime:f.mime,filename:f.filename,url:f.url}))]}),timeout:TIMEOUT,onload:callbacks.onload||(()=>{}),onerror:callbacks.onerror||(()=>{}),ontimeout:callbacks.ontimeout||(()=>{})});}
   function deleteSession(base,id){if(!id)return;GM.xmlHttpRequest({method:'DELETE',url:`${base}/session/${encodeURIComponent(id)}`,timeout:5000,onload:()=>{},onerror:()=>{},ontimeout:()=>{}});}
-  function useful(d,q){if(!d||typeof d!=='object')return false;if(norm(d.answer||d.math||''))return true;if(d.correctOptionIndex!==undefined&&d.correctOptionIndex!==null&&d.correctOptionIndex!==''&&Number.isInteger(Number(d.correctOptionIndex)))return true;if(Array.isArray(d.correctOptionIndices)&&d.correctOptionIndices.length)return true;if(Array.isArray(d.inputAnswers)&&d.inputAnswers.length)return true;if(d.table?.fills?.length||d.grid?.selectedCells?.length||d.graph?.points?.length||d.graph?.equation||d.dragDrop?.placements?.length||d.dragDrop?.order?.length)return true;return false;}
+  function useful(d,q){if(!d||typeof d!=='object')return false;if(norm(d.finalAnswer||d.answer||d.math||''))return true;if(d.correctOptionIndex!==undefined&&d.correctOptionIndex!==null&&d.correctOptionIndex!==''&&Number.isInteger(Number(d.correctOptionIndex)))return true;if(Array.isArray(d.correctOptionIndices)&&d.correctOptionIndices.length)return true;if(Array.isArray(d.inputAnswers)&&d.inputAnswers.length)return true;if(d.table?.fills?.length||d.grid?.selectedCells?.length||d.graph?.points?.length||d.graph?.equation||d.dragDrop?.placements?.length||d.dragDrop?.order?.length)return true;return false;}
   function covers(d,q){if(independentInputs(q).length){const fields=independentInputs(q),items=Array.isArray(d.inputAnswers)?d.inputAnswers:[];const ids=new Set(items.filter(x=>norm(x?.answer??x?.value??x)).map((x,pos)=>Number.isInteger(Number(x?.index))?Number(x.index):(fields[pos]?.index??pos)));if(fields.some(f=>!ids.has(f.index)))return false;}if(q.choices.length>=2){if(q.type==='multi_select'){if(!Array.isArray(d.correctOptionIndices)||!d.correctOptionIndices.length)return false;}else if(idxFor(d,q.choices)<0)return false;}if(q.type==='drag_drop'&&!((d.dragDrop?.placements?.length||0)||(d.dragDrop?.order?.length||0)))return false;if(q.type==='table'&&q.tables.some(t=>t.editableCount>0)&&!d.table?.fills?.length)return false;return true;}
 
   function requestSolution(q){const id=++state.requestId,base=state.serverUrl.replace(/\/+$/,'');let session='';let warning='';state.loading=true;updateButtons();$('#result').innerHTML='<div class="placeholder">Reading the real controls and solving with Big Pickle'+(state.doubleCheck?', then checking the answer…':'…')+'</div>';
