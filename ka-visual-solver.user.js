@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.11.1
-// @description  Khan Academy solver with corrected choice selectors and interaction-stable question detection.
+// @version      4.12.0
+// @description  Khan Academy solver with action-gated graph previews and stable dropdown/drag interactions.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -166,7 +166,10 @@
   }
 
   function makeChoiceData(nodes, kind) {
-    nodes = nodes.filter(visible).filter(el => !nodes.some(other => other !== el && other.contains(el))).slice(0, 32);
+    nodes = nodes.filter(visible)
+      .filter(el => !el.closest('[role="listbox"], [role="option"], [aria-haspopup="listbox"], .perseus-widget-dropdown, [data-testid*="dropdown" i], [class*="dropdown" i]'))
+      .filter(el => !nodes.some(other => other !== el && el.contains(other)))
+      .slice(0, 32);
     if (nodes.length < 2) return null;
     const scopes = nodes.map(choiceScope);
     const graphicFlags = scopes.map(choiceHasGraphic);
@@ -190,7 +193,7 @@
       '[data-testid*="answer-choice" i]', '[class*="answer-choice" i]',
       '[data-testid*="choice-option" i]', '[class*="choice-option" i]',
       '[data-testid*="answerChoice" i]', '[class*="answerChoice" i]',
-      'button[aria-pressed]', '[role="button"][aria-pressed]',
+      '[data-testid*="choice" i]', '[class*="choice" i]',
       '[aria-checked="true"][tabindex]', '[aria-checked="false"][tabindex]'
     ];
     const checkboxSelectors = [
@@ -353,9 +356,12 @@
     // Graph-like context does not mean the student should draw. A choice-oriented prompt or
     // a radio/answer group suppresses generated graph previews even if a graph widget exists.
     const promptForChoice = `${paragraphs.join(' ')} ${renderedText}`;
-    const choicePromptIntent = /\b(which of the following|which one|which (?:graph|point|ordered pair|coordinate|equation|expression|statement|answer|option|number line)|choose (?:the correct|one|an answer|the answer)|select (?:the correct|one|an answer|the answer)|select all that apply|what is the (?:correct )?answer|multiple.choice)\b/i.test(promptForChoice);
+    const choicePromptIntent = /\b(which of the following|which one|which (?:graph|point|ordered pair|coordinate|equation|expression|statement|answer|option|number line)|choose (?:the correct|one|an answer|the answer|the graph|a graph|which)|select (?:the correct|one|an answer|the answer|the graph|a graph|which)|identify (?:the correct|which)|what is the (?:correct )?answer|what (?:point|coordinate|ordered pair|equation|graph|value) (?:is|represents|matches)|according to (?:the )?graph|based on (?:the )?graph|select all that apply|multiple.choice)\b/i.test(promptForChoice);
+    // A diagram or image is context, not proof that this task asks the student to draw one.
+    // Require actual graph-widget markup AND an action verb asking for graph interaction.
+    const graphActionIntent = /\b(?:graph|plot|draw|sketch|create|make)\s+(?:the\s+|a\s+|an\s+)?(?:graph|function|equation|inequality|point|line|curve|parabola|vertex|intercept|coordinates?|system|region)\b|\b(?:plot|place|mark|move|drag|add)\s+(?:the\s+)?(?:point|line|vertex|intercept|coordinates?|function|curve|parabola|region)\b|\b(?:use|open)\s+(?:the\s+)?graph tool\b/i.test(promptForChoice);
     const choiceContainerPresent = !!root.querySelector('.perseus-widget-radio, .perseus-widget-checkbox, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i], [data-testid*="answer-options" i], [class*="answer-options" i], [data-testid*="choice-group" i], [class*="choice-group" i], .perseus-widget-radio-option, .perseus-radio-option, [role="radio"], input[type="radio"], [role="checkbox"], input[type="checkbox"]');
-    const explicitGraph = !choiceTask && !choiceContainerPresent && !choicePromptIntent && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
+    const explicitGraph = !choiceTask && !choiceContainerPresent && !choicePromptIntent && graphActionIntent && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
     const gridElement = root.querySelector('.perseus-widget-matrix, [role="grid"]');
     const explicitMatrix = !!gridElement;
     const gridCellNodes = gridElement ? [...gridElement.querySelectorAll('[role="gridcell"], [class*="cell"]')].filter(visible).filter(el => ![...el.querySelectorAll('[role="gridcell"], [class*="cell"]')].some(child => visible(child))) : [];
@@ -425,14 +431,14 @@
       })),
       // Deliberately exclude item/target labels and counts: those change during drag-and-drop.
       drag: { present: dragWidgetPresent, orderWidgetPresent, mode: dragWidgetPresent ? dragDrop.mode : '' },
-      taskEvidence: { choiceTask, checkboxes, choiceContainerPresent, choicePromptIntent, explicitGraph, explicitMatrix, editableTable, dragWidgetPresent }
+      taskEvidence: { choiceTask, checkboxes, choiceContainerPresent, choicePromptIntent, graphActionIntent, explicitGraph, explicitMatrix, editableTable, dragWidgetPresent }
     }).slice(0, 16000);
 
     return {
       root, paragraphs, renderedText, prompt: snapshot, type,
       choices: choiceData.labels, choiceKind: choiceData.kind, inputs, tables, visuals: visualHints,
       choiceNodes: choiceData.nodes || [], hasVisualChoices: (choiceData.graphicFlags || []).some(Boolean),
-      dragDrop, layout: { explicitGraph, explicitMatrix, gridCells, editableTable, choiceContainerPresent, choicePromptIntent, dragWidgetPresent }, fingerprint,
+      dragDrop, layout: { explicitGraph, explicitMatrix, gridCells, editableTable, choiceContainerPresent, choicePromptIntent, graphActionIntent, dragWidgetPresent }, fingerprint,
     };
   }
 
@@ -450,6 +456,7 @@
         editableTable: q.layout.editableTable && q.tables.some(t => t.editableCount > 0),
         interactiveGrid: q.type === 'grid' && q.layout.explicitMatrix,
         interactiveGraph: graphAnswerAllowed(q),
+        graphActionIntent: !!q.layout.graphActionIntent,
         dragDrop: q.type === 'drag_drop',
       },
       answerChoicesInVisibleOrder: q.choices,
@@ -469,7 +476,8 @@
       'Solve the exact Khan Academy exercise from this snapshot. Return ONLY one compact valid JSON object; no markdown or prose outside it.',
       'HARD FORMAT CONSTRAINT: DOMPermittedAnswerLayouts is authoritative. Never invent a graph, grid, table, drag/drop task, or answer field that is not explicitly permitted by that object. In particular, if interactiveGraph=false, omit the graph property; if interactiveGrid=false, omit the grid property. A graph/table/grid shown as question context does not automatically mean the student must draw/fill one.',
       'For multiple choice, evaluate each entire option, including all clauses. Select the single option that best answers the whole question; use correctOptionIndex as the zero-based index into answerChoicesInVisibleOrder. Prefer the index over repeating option text. For checkboxes, return all correct indexes in correctOptionIndices.',
-      'VISUAL CHOICE RULE: if answer choices contain number lines, small graphs, or diagrams, choose among those exact options by index. Do not draw a new Cartesian plane or invent a separate graph unless the DOM explicitly confirms an interactive graph-answer control and the task is not multiple choice.',
+      'VISUAL CHOICE RULE: if answer choices contain number lines, small graphs, or diagrams, choose among those exact options by index. Do not draw a new Cartesian plane or invent a separate graph unless the DOM confirms an interactive graph-answer control, the question explicitly asks you to graph/plot/draw/place/move something, and no choice-oriented wording or answer-choice group is present.',
+      'An image, SVG, canvas, Cartesian plane shown in the prompt, or the model returning a graph object is not sufficient reason to generate a graph preview. If graphActionIntent=false, return the requested answer/option, not a graph property.',
       mixedRule, inputRule,
       'Fill-in answers must be short and field-ready. Match grammar and use standard Khan Academy terminology, not a paraphrase. Include units only when the field requires them. Preserve signs, formulas, capitalization and listed dropdown wording.',
       'For calculations, keep unrounded intermediate values, obey requested precision, and use sensible significant figures if none are specified. For measured chemistry results, use precision supported by the measurements; e.g. 19.15 g should become 19.2 g if 3 significant figures are required.',
@@ -578,7 +586,7 @@
   function graphAnswerAllowed(q) {
     return !!(q && q.type === 'graph' && q.layout?.explicitGraph &&
       !q.layout?.choiceContainerPresent && !q.layout?.choicePromptIntent &&
-      (q.choices || []).length < 2);
+      !!q.layout?.graphActionIntent && (q.choices || []).length < 2);
   }
 
   function recoverAnswerFromExplanation(data, q) {
