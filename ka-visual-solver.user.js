@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.11.0
-// @description  Khan Academy solver with stronger multiple-choice graph handling and interaction-stable question detection.
+// @version      4.11.1
+// @description  Khan Academy solver with corrected choice selectors and interaction-stable question detection.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -354,7 +354,7 @@
     // a radio/answer group suppresses generated graph previews even if a graph widget exists.
     const promptForChoice = `${paragraphs.join(' ')} ${renderedText}`;
     const choicePromptIntent = /\b(which of the following|which one|which (?:graph|point|ordered pair|coordinate|equation|expression|statement|answer|option|number line)|choose (?:the correct|one|an answer|the answer)|select (?:the correct|one|an answer|the answer)|select all that apply|what is the (?:correct )?answer|multiple.choice)\b/i.test(promptForChoice);
-    const choiceContainerPresent = !!root.querySelector('.perseus-widget-radio, .perseus-widget-checkbox, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i], [data-testid*="answer-options" i], [class*="answer-options" i], [data-testid*="choice-group" i], [class*="choice-group" i], .perseus-widget-radio-option, .perseus-radio-option, [role="radio"], input[type="radio], [role="checkbox"], input[type="checkbox]');
+    const choiceContainerPresent = !!root.querySelector('.perseus-widget-radio, .perseus-widget-checkbox, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i], [data-testid*="answer-options" i], [class*="answer-options" i], [data-testid*="choice-group" i], [class*="choice-group" i], .perseus-widget-radio-option, .perseus-radio-option, [role="radio"], input[type="radio"], [role="checkbox"], input[type="checkbox"]');
     const explicitGraph = !choiceTask && !choiceContainerPresent && !choicePromptIntent && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
     const gridElement = root.querySelector('.perseus-widget-matrix, [role="grid"]');
     const explicitMatrix = !!gridElement;
