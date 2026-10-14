@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.8.0
-// @description  Khan Academy solver with optional answer verification and persistent light/dark themes.
+// @version      4.9.0
+// @description  Khan Academy solver with visual-choice detection for diagrams and number-line options.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -143,8 +143,26 @@
     return explicit;
   }
 
+  function choiceScope(el) {
+    if (!el) return null;
+    return el.closest('.perseus-widget-radio-option, .perseus-radio-option, .perseus-widget-checkbox-option, [role="radio"], [role="checkbox"], [data-testid*="choice"]')
+      || el.labels?.[0] || el;
+  }
+
+  function choiceHasGraphic(el) {
+    return !!(el && (el.matches?.('svg, canvas, img') || el.querySelector?.('svg, canvas, img')));
+  }
+
+  function choiceTextWithoutGraphics(el) {
+    if (!el) return '';
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('svg, canvas, img, video, input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')
+      .forEach(node => node.remove());
+    return norm(clone.innerText || clone.textContent || '').slice(0, 500);
+  }
+
   function collectChoices(root) {
-    if (!root) return { labels: [], kind: '' };
+    if (!root) return { labels: [], kind: '', nodes: [], graphicFlags: [] };
     const radioSelectors = [
       '.perseus-widget-radio-option', '.perseus-radio-option', '[role="radio"]', 'input[type="radio"]', '[data-testid*="choice"]'
     ];
@@ -157,12 +175,24 @@
         nodes = [...root.querySelectorAll(sel)].filter(visible);
         if (nodes.length >= 2) break;
       }
-      if (!nodes.length) continue;
       nodes = nodes.filter(el => !nodes.some(other => other !== el && other.contains(el)));
-      const labels = uniq(nodes.map(choiceLabel).filter(s => s.length <= 550));
-      if (labels.length >= 2) return { labels: labels.slice(0, 32), kind };
+      if (nodes.length < 2) continue;
+
+      nodes = nodes.slice(0, 32);
+      const scopes = nodes.map(choiceScope);
+      const graphicFlags = scopes.map(choiceHasGraphic);
+      const labels = scopes.map((scope, index) => {
+        const letter = String.fromCharCode(65 + index);
+        const text = choiceTextWithoutGraphics(scope);
+        if (graphicFlags[index]) {
+          // Preserve each option even when SVGs repeat the same number-line tick labels.
+          return text ? `Option ${letter}: ${text}` : `Option ${letter} (graphic choice)`;
+        }
+        return choiceLabel(nodes[index]) || text || `Option ${letter}`;
+      });
+      return { labels, kind, nodes: scopes, graphicFlags };
     }
-    return { labels: [], kind: '' };
+    return { labels: [], kind: '', nodes: [], graphicFlags: [] };
   }
 
   function labelForControl(el) {
@@ -281,6 +311,8 @@
     const paragraphs = uniq(paragraphNodes.map(staticText).filter(t => t.length >= 2 && t.length < 2200));
     const renderedText = staticText(root).slice(0, 6800) || paragraphs.join('\n\n');
     const choiceData = collectChoices(root);
+    const checkboxes = choiceData.kind === 'checkbox';
+    const choiceTask = choiceData.labels.length >= 2;
     const inputs = collectInputs(root);
     const tables = collectTables(root);
     const visualHints = collectVisualHints(root);
@@ -288,7 +320,8 @@
     const outsideInputs = inputs.filter(input => !input.inTable);
 
     // The exercise DOM, not the model's JSON, decides which visualization is allowed.
-    const explicitGraph = !!root.querySelector('.perseus-widget-interactive-graph, .graphie, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
+    // A graph/SVG inside an answer option is answer-choice artwork, not a graphing task.
+    const explicitGraph = !choiceTask && !!root.querySelector('.perseus-widget-interactive-graph, .graphie, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
     const gridElement = root.querySelector('.perseus-widget-matrix, [role="grid"]');
     const explicitMatrix = !!gridElement;
     const gridCellNodes = gridElement ? [...gridElement.querySelectorAll('[role="gridcell"], [class*="cell"]')].filter(visible).filter(el => ![...el.querySelectorAll('[role="gridcell"], [class*="cell"]')].some(child => visible(child))) : [];
@@ -318,9 +351,6 @@
     }
     const actualDrag = dragDrop.items.length >= 2 && (dragDrop.mode === 'order' || dragDrop.targets.length > 0 || !!root.querySelector('[draggable="true"], [data-rbd-draggable-id], [aria-roledescription*="draggable" i]'));
     const editableTable = tables.some(t => t.editableCount > 0) || !!root.querySelector('.perseus-widget-table');
-    const checkboxes = choiceData.kind === 'checkbox';
-    const choiceTask = choiceData.labels.length >= 2;
-
     let type = 'unknown';
     if (actualDrag) type = 'drag_drop';
     else if (choiceTask && outsideInputs.length) type = 'mixed';
@@ -353,6 +383,7 @@
     return {
       root, paragraphs, renderedText, prompt: snapshot, type,
       choices: choiceData.labels, choiceKind: choiceData.kind, inputs, tables, visuals: visualHints,
+      choiceNodes: choiceData.nodes || [], hasVisualChoices: (choiceData.graphicFlags || []).some(Boolean),
       dragDrop, layout: { explicitGraph, explicitMatrix, gridCells, editableTable }, fingerprint,
     };
   }
@@ -374,6 +405,7 @@
         dragDrop: q.type === 'drag_drop',
       },
       answerChoicesInVisibleOrder: q.choices,
+      visualAnswerChoices: q.hasVisualChoices ? { count: q.choices.length, note: 'The answer options contain graphics. Compare the attached labeled montage in A/B/C order and choose one of those options; do not invent a replacement graph.' } : null,
       answerInputsInScreenOrder: free.map(x => ({ index: x.index, label: x.label, kind: x.kind, options: x.options, placeholder: x.placeholder })),
       tables: q.tables.slice(0, 5).map(t => ({ index: t.index, rowCount: t.rowCount, colCount: t.colCount, editableCount: t.editableCount, rows: t.rows.slice(0, 24).map(row => row.slice(0, 16).map(c => ({ text: c.text, header: c.header, editable: c.editable }))) })),
       dragDrop: { mode: q.dragDrop.mode, items: q.dragDrop.items, targets: q.dragDrop.targets },
@@ -389,6 +421,7 @@
       'Solve the exact Khan Academy exercise from this snapshot. Return ONLY one compact valid JSON object; no markdown or prose outside it.',
       'HARD FORMAT CONSTRAINT: DOMPermittedAnswerLayouts is authoritative. Never invent a graph, grid, table, drag/drop task, or answer field that is not explicitly permitted by that object. In particular, if interactiveGraph=false, omit the graph property; if interactiveGrid=false, omit the grid property. A graph/table/grid shown as question context does not automatically mean the student must draw/fill one.',
       'For multiple choice, evaluate each entire option, including all clauses. Select the single option that best answers the whole question; use correctOptionIndex as the zero-based index into answerChoicesInVisibleOrder. Prefer the index over repeating option text. For checkboxes, return all correct indexes in correctOptionIndices.',
+      'VISUAL CHOICE RULE: if answer choices contain number lines, small graphs, or diagrams, choose among those exact options by index. Do not draw a new Cartesian plane or invent a separate graph unless the DOM explicitly confirms an interactive graph-answer control and the task is not multiple choice.',
       mixedRule, inputRule,
       'Fill-in answers must be short and field-ready. Match grammar and use standard Khan Academy terminology, not a paraphrase. Include units only when the field requires them. Preserve signs, formulas, capitalization and listed dropdown wording.',
       'For calculations, keep unrounded intermediate values, obey requested precision, and use sensible significant figures if none are specified. For measured chemistry results, use precision supported by the measurements; e.g. 19.15 g should become 19.2 g if 3 significant figures are required.',
@@ -733,20 +766,133 @@
     let url;try{url=new URL(src,location.href);}catch(_){return resolve(null);}if(!['http:','https:'].includes(url.protocol))return resolve(null);
     GM.xmlHttpRequest({method:'GET',url:url.href,responseType:'arraybuffer',timeout:IMAGE_TIMEOUT,onload:r=>{try{if(r.status<200||r.status>=300||!r.response)return resolve(null);const size=r.response.byteLength;if(!size||size>MAX_IMAGE_BYTES)return resolve(null);const header=String(r.responseHeaders||'').match(/content-type\s*:\s*([^;\r\n]+)/i);let mime=(header?.[1]||'').trim().toLowerCase();if(!/^image\/(png|jpe?g|webp|gif)$/.test(mime)){const p=url.pathname.toLowerCase();mime=p.endsWith('.png')?'image/png':/\.jpe?g$/.test(p)?'image/jpeg':p.endsWith('.webp')?'image/webp':p.endsWith('.gif')?'image/gif':'';}if(!mime)return resolve(null);mime=mime.replace('image/jpg','image/jpeg');resolve({type:'file',mime,filename:`ka-question-${index+1}.${mime.split('/')[1].replace('jpeg','jpg')}`,url:`data:${mime};base64,${base64(r.response)}`});}catch(_){resolve(null);}},onerror:()=>resolve(null),ontimeout:()=>resolve(null)});
   });}
+  async function choiceVisualMontage(q) {
+    const nodes = (q.choiceNodes || []).slice(0, 8);
+    if (nodes.length < 2 || !q.hasVisualChoices) return '';
+    const W = 1000, cellW = 490, cellH = 220, gap = 10, cols = 2;
+    const rows = Math.ceil(nodes.length / cols);
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = rows * cellH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    function loadDataImage(url) {
+      return new Promise(resolve => {
+        if (!url) return resolve(null);
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => resolve(null);
+        image.src = url;
+      });
+    }
+
+    async function getVisualImage(el, index) {
+      if (!el) return null;
+      try {
+        if (el.tagName.toLowerCase() === 'canvas') {
+          return await loadDataImage(el.toDataURL('image/png'));
+        }
+        if (el.tagName.toLowerCase() === 'img') {
+          const file = await loadImage(el.currentSrc || el.src, index);
+          return file ? await loadDataImage(file.url) : null;
+        }
+        if (el.tagName.toLowerCase() !== 'svg') return null;
+        const rect = el.getBoundingClientRect();
+        const width = Math.max(1, Math.round(rect.width || 240));
+        const height = Math.max(1, Math.round(rect.height || 100));
+        const clone = el.cloneNode(true);
+        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        clone.setAttribute('width', String(width));
+        clone.setAttribute('height', String(height));
+        if (!clone.hasAttribute('viewBox')) clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        // Copy computed SVG paint styles, since a detached SVG no longer inherits Khan Academy's CSS.
+        const originals = [el, ...el.querySelectorAll('*')];
+        const copies = [clone, ...clone.querySelectorAll('*')];
+        const properties = ['fill','fill-opacity','stroke','stroke-width','stroke-linecap','stroke-linejoin','stroke-dasharray','color','font-family','font-size','font-weight','text-anchor','opacity','visibility','display'];
+        originals.forEach((source, i) => {
+          const target = copies[i];
+          if (!target) return;
+          try {
+            const cs = getComputedStyle(source);
+            const styles = properties.map(prop => `${prop}:${cs.getPropertyValue(prop)}`).join(';');
+            target.setAttribute('style', `${target.getAttribute('style') || ''};${styles}`);
+          } catch (_) {}
+        });
+        const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        try {
+          const image = await new Promise(resolve => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => resolve(null);
+            img.src = url;
+          });
+          return image;
+        } finally { URL.revokeObjectURL(url); }
+      } catch (_) { return null; }
+    }
+
+    let rendered = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const option = nodes[i];
+      const x = (i % cols) * (cellW + gap) + gap;
+      const y = Math.floor(i / cols) * cellH + gap;
+      ctx.fillStyle = '#fbf9ff';
+      ctx.fillRect(x, y, cellW, cellH - gap);
+      ctx.strokeStyle = '#d8cfe6'; ctx.lineWidth = 2; ctx.strokeRect(x, y, cellW, cellH - gap);
+      ctx.fillStyle = '#483460'; ctx.font = 'bold 25px sans-serif';
+      ctx.fillText(`Option ${String.fromCharCode(65 + i)}`, x + 14, y + 31);
+
+      const visual = option.matches?.('svg,canvas,img') ? option : option.querySelector?.('svg,canvas,img');
+      if (visual && visible(visual)) {
+        const image = await getVisualImage(visual, i);
+        if (image) {
+          const maxW = cellW - 28, maxH = cellH - 65;
+          const ratio = Math.min(maxW / Math.max(1, image.naturalWidth || image.width), maxH / Math.max(1, image.naturalHeight || image.height));
+          const drawW = Math.max(1, (image.naturalWidth || image.width) * ratio);
+          const drawH = Math.max(1, (image.naturalHeight || image.height) * ratio);
+          try {
+            ctx.drawImage(image, x + (cellW - drawW) / 2, y + 42 + (maxH - drawH) / 2, drawW, drawH);
+            rendered++;
+          } catch (_) {}
+        }
+      } else {
+        ctx.fillStyle = '#4d4658'; ctx.font = '16px sans-serif';
+        ctx.fillText((q.choices[i] || '').slice(0, 58), x + 14, y + 82, cellW - 28);
+      }
+    }
+    if (rendered < 2) return '';
+    try {
+      const url = canvas.toDataURL('image/png');
+      return url.length > 50 ? url : '';
+    } catch (_) { return ''; }
+  }
+
   async function imageFiles(q){
-    const images=q.visuals.filter(x=>x.kind==='image'&&x.src&&(x.width>=45||x.height>=45)).sort((a,b)=>b.width*b.height-a.width*a.height).slice(0,MAX_IMAGES);
-    const files=[];let total=0;
+    const files=[];let total=0;let montageAdded=false;
+    if(q.hasVisualChoices){
+      const montage=await choiceVisualMontage(q);
+      const size=montage?Math.floor((montage.split(',')[1]||'').length*.75):0;
+      if(montage&&size<=MAX_IMAGE_BYTES&&size<=5200000){
+        files.push({type:'file',mime:'image/png',filename:'ka-visual-choice-montage.png',url:montage});
+        total+=size;montageAdded=true;
+      }
+    }
+    const choiceImageSources=new Set(montageAdded?(q.choiceNodes||[]).flatMap(node=>[...node.querySelectorAll('img')].map(img=>img.currentSrc||img.src)):[]);
+    const images=q.visuals.filter(x=>x.kind==='image'&&x.src&&(x.width>=45||x.height>=45)&&!choiceImageSources.has(x.src)).sort((a,b)=>b.width*b.height-a.width*a.height).slice(0,Math.max(0,MAX_IMAGES-files.length));
     for(let i=0;i<images.length;i++){const f=await loadImage(images[i].src,i);if(!f)continue;const bytes=Math.floor((f.url.split(',')[1]||'').length*.75);if(total+bytes>5200000)continue;total+=bytes;files.push(f);}
     // Canvas-backed diagrams often contain the only meaningful visual labels/relationships.
     if(q.root&&files.length<MAX_IMAGES){
-      for(const canvas of [...q.root.querySelectorAll('canvas')].filter(visible).slice(0,2)){
+      for(const canvas of [...q.root.querySelectorAll('canvas')].filter(visible).filter(canvas=>!montageAdded||(q.choiceNodes||[]).every(node=>!node.contains(canvas))).slice(0,2)){
         if(files.length>=MAX_IMAGES)break;
         try{const url=canvas.toDataURL('image/png');const payload=url.split(',')[1]||'';const bytes=Math.floor(payload.length*.75);if(!payload||bytes>MAX_IMAGE_BYTES||total+bytes>5200000)continue;files.push({type:'file',mime:'image/png',filename:`ka-question-canvas-${files.length+1}.png`,url});total+=bytes;}catch(_){}
       }
     }
     // Attach inline SVG diagrams as PNGs too, so the model gets pixels rather than labels alone.
     if(q.root&&files.length<MAX_IMAGES){
-      for(const svg of [...q.root.querySelectorAll('svg')].filter(visible).slice(0,3)){
+      for(const svg of [...q.root.querySelectorAll('svg')].filter(visible).filter(svg=>!montageAdded||(q.choiceNodes||[]).every(node=>!node.contains(svg))).slice(0,3)){
         if(files.length>=MAX_IMAGES)break;
         try{
           const clone=svg.cloneNode(true);if(!clone.getAttribute('xmlns'))clone.setAttribute('xmlns','http://www.w3.org/2000/svg');
@@ -756,7 +902,8 @@
         }catch(_){}
       }
     }
-    const missing=q.visuals.filter(x=>x.kind==='image').length-files.filter(x=>/^ka-question-\d+/.test(x.filename)).length;
+    const nonChoiceImages=q.visuals.filter(x=>x.kind==='image'&&(!montageAdded||!choiceImageSources.has(x.src)));
+    const missing=nonChoiceImages.length-files.filter(x=>/^ka-question-\d+/.test(x.filename)).length;
     return{files,warning:missing>0?'Some question images could not be attached; image-dependent details may be unavailable.':''};
   }
   function postMessage(base,session,prompt,files,callbacks={}){GM.xmlHttpRequest({method:'POST',url:`${base}/session/${encodeURIComponent(session)}/message`,headers:{'Content-Type':'application/json'},data:JSON.stringify({model:MODEL,system:'Solve Khan Academy exercises accurately. Return only the requested JSON. Treat the page controls as authoritative and never invent an output layout.',parts:[{type:'text',text:prompt},...(files||[]).map(f=>({type:'file',mime:f.mime,filename:f.filename,url:f.url}))]}),timeout:TIMEOUT,onload:callbacks.onload||(()=>{}),onerror:callbacks.onerror||(()=>{}),ontimeout:callbacks.ontimeout||(()=>{})});}
