@@ -1,6 +1,6 @@
 # KA Visual Solver
 
-Current version: **v4.10.0**.
+Current version: **v4.10.1**.
 
 A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big Pickle** for a solution, then displays the result in a small panel. It supports multiple-choice, mixed questions, answer fields, tables, drag-and-drop previews, and image-assisted questions.
 
