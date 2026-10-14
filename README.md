@@ -1,6 +1,6 @@
 # KA Visual Solver
 
-Current version: **v4.7.1**.
+Current version: **v4.8.0**.
 
 A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big Pickle** for a solution, then displays the result in a small panel. It supports multiple-choice, mixed questions, answer fields, tables, drag-and-drop previews, and image-assisted questions.
 
@@ -16,6 +16,8 @@ A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big
 - Visible question text, answer choices, table structure, SVG/canvas hints, and attachable images in the model prompt.
 - Layouts gated by detected page controls, so an AI response alone should not create a pretend graph or grid.
 - Manual solving by default; an optional auto mode can solve newly detected questions.
+- Optional second-pass AI verification (can be switched off to get the first answer without a verification request).
+- Light and dark panel themes; both theme and double-check preference persist in browser storage.
 - Dropdown selections and their current values are excluded from the question fingerprint, helping prevent the result panel from resetting while answering.
 
 ## Requirements
@@ -133,6 +135,15 @@ opencode serve --hostname 127.0.0.1 --port 4096
 Leave the server terminal open while using Khan Academy.
 
 Official references: [Windows/WSL setup](https://opencode.ai/docs/windows-wsl/) and [installation methods](https://opencode.ai/docs/).
+
+## Solver settings
+
+The controls under **OpenCode settings** include two toggles:
+
+- **Double-check: ON/OFF** — enabled by default. When on, the script sends a second request to Big Pickle to independently review the first answer. Turn it off to skip that request and display the first-pass answer sooner; the answer may be less reliable.
+- **Theme: Light/Dark** — switch the solver panel between light and dark appearances. The chosen theme is retained across page loads.
+
+These preferences are saved in the browser's local storage for the Khan Academy site. Clearing site data may reset them.
 
 ## Use it
 
