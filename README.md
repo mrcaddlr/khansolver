@@ -1,6 +1,6 @@
 # KA Visual Solver
 
-Current version: **v4.9.0**.
+Current version: **v4.10.0**.
 
 A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big Pickle** for a solution, then displays the result in a small panel. It supports multiple-choice, mixed questions, answer fields, tables, drag-and-drop previews, and image-assisted questions.
 
@@ -20,6 +20,9 @@ A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big
 - Manual solving by default; an optional auto mode can solve newly detected questions.
 - Optional second-pass AI verification (can be switched off to get the first answer without a verification request).
 - Light and dark panel themes; both theme and double-check preference persist in browser storage.
+- Selecting dropdown answers or moving draggable items should not reset the solution panel, because dynamic answer state is excluded from the question fingerprint.
+- Multiple-choice detection supports more Perseus/radio-group markup variants.
+- Static Graphie/Cartesian diagrams in the question prompt do not by themselves enable the graph-answer preview; the script looks for actual interactive graph-answer controls.
 - Dropdown selections and their current values are excluded from the question fingerprint, helping prevent the result panel from resetting while answering.
 
 ## Requirements
