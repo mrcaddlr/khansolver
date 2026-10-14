@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.10.1
-// @description  Khan Academy solver with stable dropdown/drag state and accurate graph multiple-choice detection.
+// @version      4.11.0
+// @description  Khan Academy solver with stronger multiple-choice graph handling and interaction-stable question detection.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -80,21 +80,16 @@
     if (!el) return '';
     const clone = el.cloneNode(true);
     const mask = [
+      // Mask whole interactive widgets first, rather than their changing inner selections/items.
+      '.perseus-widget-orderer', '[data-testid*="orderer" i]', '[class*="sortable" i]',
+      '[data-testid*="drag" i]', '[data-testid*="drop" i]', '[class*="drag" i]', '[class*="drop" i]',
       'input', 'select', 'textarea', '[contenteditable="true"]', '[role="textbox"]', '[role="combobox"]',
-      '[role="listbox"]', '[aria-haspopup="listbox"]', '[data-testid*="dropdown" i]', '[class*="dropdown" i]',
+      '[role="listbox"]', '[role="option"]', '[aria-haspopup="listbox"]', '[data-testid*="dropdown" i]', '[class*="dropdown" i]',
       '.mq-editable-field', '.mathquill', '.perseus-widget-input-number', '.perseus-widget-input-expression',
-      '.perseus-widget-dropdown', '.perseus-widget-orderer button', '.perseus-widget-orderer [role="button"]',
-      '[data-testid*="orderer" i] button', '[data-testid*="orderer" i] [role="button"]',
-      '[role="option"]', '[role="listbox"]', '[aria-haspopup="listbox"]',
-      '.perseus-widget-orderer button', '.perseus-widget-orderer [role="button"]',
-      '[data-testid*="orderer" i] button', '[data-testid*="orderer" i] [role="button"]',
-      '[draggable="true"]', '[aria-roledescription*="draggable" i]', '[data-rbd-draggable-id]',
-      '[data-testid*="draggable" i]', '[data-testid*="drag-item" i]', '[data-testid*="sortable-item" i]',
-      '[class*="draggable-item" i]', '[class*="drag-item" i]', '[class*="sortable-item" i]',
-      '[data-droppable-id]', '[data-drop-zone]', '[aria-dropeffect]',
-      '[data-testid*="drop-target" i]', '[data-testid*="dropzone" i]',
-      '[data-testid*="drop-zone" i]', '[class*="droppable" i]', '[class*="drop-target" i]',
-      '[class*="dropzone" i]', '[class*="drop-zone" i]'
+      '.perseus-widget-dropdown', '[draggable="true"]', '[aria-roledescription*="draggable" i]', '[data-rbd-draggable-id]',
+      '[data-droppable-id]', '[data-drop-zone]', '[aria-dropeffect]', '[data-testid*="drop-target" i]',
+      '[data-testid*="dropzone" i]', '[data-testid*="drop-zone" i]', '[class*="droppable" i]',
+      '[class*="drop-target" i]', '[class*="dropzone" i]', '[class*="drop-zone" i]'
     ].join(',');
     const nodes = [...clone.querySelectorAll(mask)];
     nodes.filter(n => !nodes.some(other => other !== n && other.contains(n)))
@@ -154,7 +149,7 @@
 
   function choiceScope(el) {
     if (!el) return null;
-    return el.closest('.perseus-widget-radio-option, .perseus-radio-option, .perseus-widget-checkbox-option, [role="radio"], [role="checkbox"], [data-testid*="choice" i], [data-testid*="radio-option" i], [class*="radio-option" i], [data-testid*="answer-choice" i], [class*="answer-choice" i], [class*="answerChoice" i]')
+    return el.closest('.perseus-widget-radio-option, .perseus-radio-option, .perseus-widget-checkbox-option, [role="radio"], [role="checkbox"], [data-testid*="radio-option" i], [class*="radio-option" i], [data-testid*="answer-choice" i], [class*="answer-choice" i], [data-testid*="choice-option" i], [class*="choice-option" i], [data-testid*="answerChoice" i], [class*="answerChoice" i]')
       || el.labels?.[0] || el;
   }
 
@@ -178,10 +173,7 @@
     const labels = scopes.map((scope, index) => {
       const letter = String.fromCharCode(65 + index);
       const text = choiceTextWithoutGraphics(scope);
-      if (graphicFlags[index]) {
-        // Preserve each option even when SVGs repeat the same number-line tick labels.
-        return text ? `Option ${letter}: ${text}` : `Option ${letter} (graphic choice)`;
-      }
+      if (graphicFlags[index]) return text ? `Option ${letter}: ${text}` : `Option ${letter} (graphic choice)`;
       return choiceLabel(nodes[index]) || text || `Option ${letter}`;
     });
     return { labels, kind, nodes: scopes, graphicFlags };
@@ -189,11 +181,17 @@
 
   function collectChoices(root) {
     if (!root) return { labels: [], kind: '', nodes: [], graphicFlags: [] };
+
+    // Prefer explicit individual options. Avoid generic "choice" testids here because
+    // dropdown menu items may use similar names and must not become multiple-choice answers.
     const radioSelectors = [
       '.perseus-widget-radio-option', '.perseus-radio-option', '[role="radio"]', 'input[type="radio"]',
-      '[data-testid*="choice" i]', '[data-testid*="radio-option" i]', '[class*="radio-option" i]',
-      '[data-testid*="answer-choice" i]', '[class*="answer-choice" i]', '[data-testid*="answerChoice" i]',
-      '[class*="answerChoice" i]', 'button[aria-pressed]', '[role="button"][aria-pressed]'
+      '[data-testid*="radio-option" i]', '[class*="radio-option" i]',
+      '[data-testid*="answer-choice" i]', '[class*="answer-choice" i]',
+      '[data-testid*="choice-option" i]', '[class*="choice-option" i]',
+      '[data-testid*="answerChoice" i]', '[class*="answerChoice" i]',
+      'button[aria-pressed]', '[role="button"][aria-pressed]',
+      '[aria-checked="true"][tabindex]', '[aria-checked="false"][tabindex]'
     ];
     const checkboxSelectors = [
       '.perseus-widget-checkbox-option', '[role="checkbox"]', 'input[type="checkbox"]',
@@ -201,25 +199,29 @@
     ];
     for (const [kind, selectors] of [['radio', radioSelectors], ['checkbox', checkboxSelectors]]) {
       for (const sel of selectors) {
-        const nodes = [...root.querySelectorAll(sel)].filter(visible);
-        if (nodes.length < 2) continue;
-        const result = makeChoiceData(nodes, kind);
+        const result = makeChoiceData([...root.querySelectorAll(sel)], kind);
         if (result) return result;
       }
     }
 
-    // Fallback for radio-group markup whose option wrappers don't use Perseus's usual classes.
-    const groups = [...root.querySelectorAll('.perseus-widget-radio, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i]')].filter(visible);
+    // Fall back to child controls inside recognizable answer-choice groups.
+    const groups = [...root.querySelectorAll(
+      '.perseus-widget-radio, .perseus-widget-checkbox, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i], [data-testid*="answer-options" i], [class*="answer-options" i], [data-testid*="choice-group" i], [class*="choice-group" i]'
+    )].filter(visible);
+    const selectors = [
+      '.perseus-widget-radio-option', '.perseus-radio-option', '.perseus-widget-checkbox-option',
+      '[role="radio"]', '[role="checkbox"]', 'input[type="radio"]', 'input[type="checkbox"]',
+      '[data-testid*="answer-choice" i]', '[class*="answer-choice" i]',
+      '[data-testid*="choice-option" i]', '[class*="choice-option" i]',
+      'button:not([type="submit"]):not([type="reset"])', '[role="button"]', 'label', 'li', '[tabindex]'
+    ].join(',');
     for (const group of groups) {
-      let nodes = [...group.querySelectorAll('input[type="radio"], [role="radio"], button, [role="button"], label, [tabindex]')].filter(visible);
-      nodes = nodes.filter(el => !nodes.some(other => other !== el && other.contains(el)));
-      nodes = nodes.filter(el => choiceTextWithoutGraphics(el) || choiceHasGraphic(el));
-      const result = makeChoiceData(nodes, 'radio');
+      let nodes = [...group.querySelectorAll(selectors)].filter(visible);
+      nodes = nodes.filter(el => !el.closest('[role="listbox"], [role="option"], .perseus-widget-dropdown, [class*="dropdown" i]'));
+      let result = makeChoiceData(nodes, group.matches('.perseus-widget-checkbox, [class*="checkbox" i]') ? 'checkbox' : 'radio');
       if (result) return result;
-
-      const directChildren = [...group.children].filter(visible).filter(el => choiceTextWithoutGraphics(el) || choiceHasGraphic(el));
-      const childResult = makeChoiceData(directChildren, 'radio');
-      if (childResult) return childResult;
+      result = makeChoiceData([...group.children].filter(visible), 'radio');
+      if (result) return result;
     }
     return { labels: [], kind: '', nodes: [], graphicFlags: [] };
   }
@@ -348,12 +350,12 @@
     const dragDrop = collectDragDrop(root);
     const outsideInputs = inputs.filter(input => !input.inTable);
 
-    // A rendered Graphie can be static question context. Only a real interactive-graph
-    // widget or an explicit graph-input control is permission to draw a graph preview.
-    // A radio group also signals a choose-an-answer task, even if unusual DOM markup prevents
-    // extracting every option label cleanly.
-    const choiceContainerPresent = !!root.querySelector('.perseus-widget-radio, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i]');
-    const explicitGraph = !choiceTask && !choiceContainerPresent && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
+    // Graph-like context does not mean the student should draw. A choice-oriented prompt or
+    // a radio/answer group suppresses generated graph previews even if a graph widget exists.
+    const promptForChoice = `${paragraphs.join(' ')} ${renderedText}`;
+    const choicePromptIntent = /\b(which of the following|which one|which (?:graph|point|ordered pair|coordinate|equation|expression|statement|answer|option|number line)|choose (?:the correct|one|an answer|the answer)|select (?:the correct|one|an answer|the answer)|select all that apply|what is the (?:correct )?answer|multiple.choice)\b/i.test(promptForChoice);
+    const choiceContainerPresent = !!root.querySelector('.perseus-widget-radio, .perseus-widget-checkbox, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i], [data-testid*="answer-options" i], [class*="answer-options" i], [data-testid*="choice-group" i], [class*="choice-group" i], .perseus-widget-radio-option, .perseus-radio-option, [role="radio"], input[type="radio], [role="checkbox"], input[type="checkbox]');
+    const explicitGraph = !choiceTask && !choiceContainerPresent && !choicePromptIntent && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
     const gridElement = root.querySelector('.perseus-widget-matrix, [role="grid"]');
     const explicitMatrix = !!gridElement;
     const gridCellNodes = gridElement ? [...gridElement.querySelectorAll('[role="gridcell"], [class*="cell"]')].filter(visible).filter(el => ![...el.querySelectorAll('[role="gridcell"], [class*="cell"]')].some(child => visible(child))) : [];
@@ -405,37 +407,32 @@
 
     const fingerprint = JSON.stringify({
       path: location.pathname,
+      // Paragraph text is extracted with interactive widgets masked out.
       paragraphs,
-      choices: choiceData.labels,
-      type,
-      // Keep only control structure. Selected dropdown values and changing option lists are state, not a new question.
+      // Dropdown menus and draggable banks are mutable answer state, not question identity.
+      choices: dragWidgetPresent ? [] : choiceData.labels,
       inputStructure: inputs.map(x => ({ index: x.index, kind: x.kind, inTable: x.inTable })),
       tables: tables.map(t => ({
         source: t.source, rowCount: t.rowCount, colCount: t.colCount, editableCount: t.editableCount,
         rows: t.rows.map(row => row.map(c => ({
-          // Dragged text can move between cells; never fingerprint these changing placements.
-          text: actualDrag ? (c.header ? c.text : '') : (c.editable ? '' : c.text),
+          text: c.header ? c.text : (dragWidgetPresent || c.editable ? '' : c.text),
           header: c.header, editable: c.editable, role: c.role
         })))
       })),
-      // SVG/canvas labels and plotted points can change as the learner interacts with a widget.
-      visuals: visualHints.map(x => ({
-        kind: x.kind,
-        alt: x.kind === 'image' ? x.alt : '',
-        title: x.kind === 'image' ? x.title : '',
-        src: x.kind === 'image' ? String(x.src || '').split('?')[0].slice(0, 240) : '',
-        width: x.width, height: x.height
+      // Ignore live SVG/canvas labels and plotted state; retain stable image identity.
+      visuals: visualHints.filter(x => x.kind === 'image').map(x => ({
+        alt: x.alt, title: x.title, src: String(x.src || '').split('?')[0].slice(0, 240)
       })),
-      // Do not fingerprint labels or counts from the draggable bank: these change after each drop.
+      // Deliberately exclude item/target labels and counts: those change during drag-and-drop.
       drag: { present: dragWidgetPresent, orderWidgetPresent, mode: dragWidgetPresent ? dragDrop.mode : '' },
-      layoutEvidence: { explicitGraph, explicitMatrix, gridCells, gridRows, gridCols, editableTable, choiceContainerPresent },
+      taskEvidence: { choiceTask, checkboxes, choiceContainerPresent, choicePromptIntent, explicitGraph, explicitMatrix, editableTable, dragWidgetPresent }
     }).slice(0, 16000);
 
     return {
       root, paragraphs, renderedText, prompt: snapshot, type,
       choices: choiceData.labels, choiceKind: choiceData.kind, inputs, tables, visuals: visualHints,
       choiceNodes: choiceData.nodes || [], hasVisualChoices: (choiceData.graphicFlags || []).some(Boolean),
-      dragDrop, layout: { explicitGraph, explicitMatrix, gridCells, editableTable }, fingerprint,
+      dragDrop, layout: { explicitGraph, explicitMatrix, gridCells, editableTable, choiceContainerPresent, choicePromptIntent, dragWidgetPresent }, fingerprint,
     };
   }
 
@@ -452,7 +449,7 @@
         independentInputs: free.length,
         editableTable: q.layout.editableTable && q.tables.some(t => t.editableCount > 0),
         interactiveGrid: q.type === 'grid' && q.layout.explicitMatrix,
-        interactiveGraph: q.type === 'graph' && q.layout.explicitGraph,
+        interactiveGraph: graphAnswerAllowed(q),
         dragDrop: q.type === 'drag_drop',
       },
       answerChoicesInVisibleOrder: q.choices,
@@ -578,11 +575,49 @@
     return `${match[1] || ''}${result}${tail ? ` ${tail}` : ''}`.trim();
   }
 
-  function normalizeForRender(data, q) {
+  function graphAnswerAllowed(q) {
+    return !!(q && q.type === 'graph' && q.layout?.explicitGraph &&
+      !q.layout?.choiceContainerPresent && !q.layout?.choicePromptIntent &&
+      (q.choices || []).length < 2);
+  }
+
+  function recoverAnswerFromExplanation(data, q) {
     const d = data && typeof data === 'object' ? { ...data } : { answer: String(data || '') };
+    const explanation = norm(d.explanation || '');
+    if ((q.choices || []).length >= 2) {
+      let index = idxFor(d, q.choices);
+      if (index < 0) {
+        const combined = `${norm(d.answer || '')}\n${explanation}`;
+        const letter = combined.match(/\b(?:the\s+)?(?:correct\s+)?(?:answer|option|choice)\s*(?:is|:|=)?\s*\(?([A-Z])\)?(?=$|[).,:;\s])/i);
+        if (letter) {
+          const candidate = letter[1].toUpperCase().charCodeAt(0) - 65;
+          if (candidate >= 0 && candidate < q.choices.length) index = candidate;
+        }
+        if (index < 0) {
+          const ranked = q.choices.map((choice, i) => ({ i, value: norm(choice) }))
+            .filter(x => x.value.length >= 3)
+            .sort((a, b) => b.value.length - a.value.length);
+          const lower = combined.toLowerCase();
+          const match = ranked.find(x => lower.includes(x.value.toLowerCase()));
+          if (match) index = match.i;
+        }
+      }
+      if (index >= 0) {
+        d.correctOptionIndex = index;
+        d.answer = q.choices[index];
+      }
+    } else if (!norm(d.answer || d.math || '') && q.layout?.choicePromptIntent && explanation) {
+      const match = explanation.match(/(?:the\s+)?(?:correct\s+)?answer\s*(?:is|:|=)\s*([^.;\n]{1,180})/i);
+      if (match) d.answer = norm(match[1]);
+    }
+    return d;
+  }
+
+  function normalizeForRender(data, q) {
+    const d = recoverAnswerFromExplanation(data, q);
     // Hard gate output structures using actual exercise DOM evidence. The model cannot trigger these renderers.
     if (!(q.type === 'grid' && q.layout.explicitMatrix)) delete d.grid;
-    if (!(q.type === 'graph' && q.layout.explicitGraph)) delete d.graph;
+    if (!graphAnswerAllowed(q)) delete d.graph;
     if (!(q.type === 'table' && q.tables.some(t => t.editableCount > 0))) delete d.table;
     if (q.type !== 'drag_drop') delete d.dragDrop;
     if (q.choices.length < 2) { delete d.correctOptionIndex; delete d.correctOptionIndices; }
@@ -687,7 +722,7 @@
     const isMixed = q.type === 'mixed';
     const actualEditableTable = q.type === 'table' && q.tables.some(t => t.editableCount > 0);
     const actualGrid = q.type === 'grid' && q.layout.explicitMatrix;
-    const actualGraph = q.type === 'graph' && q.layout.explicitGraph;
+    const actualGraph = graphAnswerAllowed(q);
     const actualDrag = q.type === 'drag_drop' && q.dragDrop.items.length >= 2;
 
     if (isChoice) parts.push(renderChoices(data, q));
@@ -967,7 +1002,7 @@
     GM.xmlHttpRequest({method:'POST',url:`${base}/session`,headers:{'Content-Type':'application/json'},data:JSON.stringify({title:'KA Visual Solver · verified solution'}),timeout:TIMEOUT,onload:res=>{if(res.status<200||res.status>=300){fail(`OpenCode session creation failed (HTTP ${res.status}). Check the server URL and terminal.`);return;}let p;try{p=JSON.parse(res.responseText||'{}');}catch(_){fail('OpenCode returned an unreadable session response.');return;}session=getSessionId(p);if(!session){fail('OpenCode did not return a session ID. Check the local OpenCode API version.');return;}
       imageFiles(q).then(({files,warning:w})=>{if(id!==state.requestId){cleanup();return;}warning=w;$('#result').innerHTML=`<div class="placeholder">Solving with Big Pickle${files.length?` and ${files.length} question image(s)`:''}${state.doubleCheck?' · second-pass verification…':''}</div>`;
         const verify=(candidate,attempt=0)=>{if(!state.doubleCheck){finish(candidate,'skipped','Double-check is disabled; showing the first-pass answer.');return;}postMessage(base,session,verificationPrompt(q,candidate),[],{onload:r=>{if(id!==state.requestId){cleanup();return;}if(!state.doubleCheck){finish(candidate,'skipped','Double-check was turned off while solving; showing the first-pass answer.');return;}try{let checked=parseResponse(r,'verification');checked=normalizeForRender(checked,q);if(useful(checked,q)&&covers(checked,q))finish(checked,'checked');else if(attempt<1)verify(useful(checked,q)?checked:candidate,attempt+1);else finish(candidate,'failed','The verifier did not return a complete answer for every visible part; showing the first pass.');}catch(e){finish(candidate,'failed',`Second-pass check failed; showing the first pass. ${e.message||e}`);}},onerror:()=>finish(candidate,'failed','Second-pass check could not reach OpenCode; showing the first pass.'),ontimeout:()=>finish(candidate,'failed','Second-pass check timed out; showing the first pass.')});};
-        const solve=(attached,retry=0)=>{let prompt=solverPrompt(q);if(retry)prompt+='\n\nYour prior answer was incomplete. Re-read the actual UI evidence and answer every required field. Never invent a graph or grid.';if(warning)prompt+=`\n\nIMAGE NOTE: ${warning} Do not guess image-specific details.`;postMessage(base,session,prompt,attached,{onload:r=>{if(id!==state.requestId){cleanup();return;}let d;try{d=parseResponse(r,'solution');}catch(e){if(attached.length&&r.status>=400&&/image|vision|media|attachment|file|unsupported|validation/i.test(`${e.message} ${r.responseText||''}`)){warning='OpenCode could not accept attached images; continued text-only, so image-dependent answers may be unreliable.';solve([],Math.max(1,retry));return;}if(retry<1){solve(attached,retry+1);return;}fail(`Could not read Big Pickle’s response: ${e.message||e}`);return;}if(!useful(d,q)&&retry<1){solve(attached,retry+1);return;}if(!useful(d,q)){fail('Big Pickle returned an incomplete answer twice. Press Solve question to retry.');return;}verify(normalizeForRender(d,q));},onerror:()=>retry<1?solve(attached,retry+1):fail('Could not reach the OpenCode message API. Check that the server is running at the configured URL.'),ontimeout:()=>retry<1?solve(attached,retry+1):fail('Big Pickle timed out twice. Check the OpenCode server, then try again.')});};
+        const solve=(attached,retry=0)=>{let prompt=solverPrompt(q);if(retry)prompt+='\n\nYour prior answer was incomplete. Re-read the actual UI evidence and answer every required field. Never invent a graph or grid.';if(warning)prompt+=`\n\nIMAGE NOTE: ${warning} Do not guess image-specific details.`;postMessage(base,session,prompt,attached,{onload:r=>{if(id!==state.requestId){cleanup();return;}let d;try{d=recoverAnswerFromExplanation(parseResponse(r,'solution'),q);}catch(e){if(attached.length&&r.status>=400&&/image|vision|media|attachment|file|unsupported|validation/i.test(`${e.message} ${r.responseText||''}`)){warning='OpenCode could not accept attached images; continued text-only, so image-dependent answers may be unreliable.';solve([],Math.max(1,retry));return;}if(retry<1){solve(attached,retry+1);return;}fail(`Could not read Big Pickle’s response: ${e.message||e}`);return;}if(!useful(d,q)&&retry<1){solve(attached,retry+1);return;}if(!useful(d,q)){fail('Big Pickle returned an incomplete answer twice. Press Solve question to retry.');return;}verify(normalizeForRender(d,q));},onerror:()=>retry<1?solve(attached,retry+1):fail('Could not reach the OpenCode message API. Check that the server is running at the configured URL.'),ontimeout:()=>retry<1?solve(attached,retry+1):fail('Big Pickle timed out twice. Check the OpenCode server, then try again.')});};
         solve(files,0);
       }).catch(e=>fail(`Could not prepare question images: ${e.message||e}`));
     },onerror:()=>fail(`Could not connect to ${base}. Start OpenCode with: opencode serve --hostname 127.0.0.1 --port 4096`),ontimeout:()=>fail('OpenCode did not respond in time. Check that the local server is running.')});
