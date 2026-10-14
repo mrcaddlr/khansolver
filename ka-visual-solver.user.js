@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.12.0
-// @description  Khan Academy solver with action-gated graph previews and stable dropdown/drag interactions.
+// @version      4.12.1
+// @description  Khan Academy solver with stricter graph task detection and more stable interactive answers.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -359,7 +359,11 @@
     const choicePromptIntent = /\b(which of the following|which one|which (?:graph|point|ordered pair|coordinate|equation|expression|statement|answer|option|number line)|choose (?:the correct|one|an answer|the answer|the graph|a graph|which)|select (?:the correct|one|an answer|the answer|the graph|a graph|which)|identify (?:the correct|which)|what is the (?:correct )?answer|what (?:point|coordinate|ordered pair|equation|graph|value) (?:is|represents|matches)|according to (?:the )?graph|based on (?:the )?graph|select all that apply|multiple.choice)\b/i.test(promptForChoice);
     // A diagram or image is context, not proof that this task asks the student to draw one.
     // Require actual graph-widget markup AND an action verb asking for graph interaction.
-    const graphActionIntent = /\b(?:graph|plot|draw|sketch|create|make)\s+(?:the\s+|a\s+|an\s+)?(?:graph|function|equation|inequality|point|line|curve|parabola|vertex|intercept|coordinates?|system|region)\b|\b(?:plot|place|mark|move|drag|add)\s+(?:the\s+)?(?:point|line|vertex|intercept|coordinates?|function|curve|parabola|region)\b|\b(?:use|open)\s+(?:the\s+)?graph tool\b/i.test(promptForChoice);
+    const graphActionIntent =
+      /\b(?:graph|plot|draw|sketch)\s+(?:(?:the|a|an|following|given)\s+){0,2}(?:graph|function|equation|inequality|point|line|curve|parabola|vertex|intercept|coordinates?|system|region)\b/i.test(promptForChoice) ||
+      /\b(?:graph|plot|draw|sketch)\s+(?:[-+]?\d|\(|[xy]\s*=|f\s*\()/i.test(promptForChoice) ||
+      /\b(?:plot|place|mark|move|drag|add)\s+(?:the\s+)?(?:point|line|vertex|intercept|coordinates?|function|curve|parabola|region)\b/i.test(promptForChoice) ||
+      /\buse\s+(?:the\s+)?graph tool\s+to\s+(?:graph|plot|draw|place|move|add)\b/i.test(promptForChoice);
     const choiceContainerPresent = !!root.querySelector('.perseus-widget-radio, .perseus-widget-checkbox, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i], [data-testid*="answer-options" i], [class*="answer-options" i], [data-testid*="choice-group" i], [class*="choice-group" i], .perseus-widget-radio-option, .perseus-radio-option, [role="radio"], input[type="radio"], [role="checkbox"], input[type="checkbox"]');
     const explicitGraph = !choiceTask && !choiceContainerPresent && !choicePromptIntent && graphActionIntent && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
     const gridElement = root.querySelector('.perseus-widget-matrix, [role="grid"]');
@@ -393,6 +397,8 @@
     const dragWidgetPresent = orderWidgetPresent || !!root.querySelector('[draggable="true"], [aria-roledescription*="draggable" i], [data-rbd-draggable-id], [data-droppable-id], [data-drop-zone], [data-testid*="drop-target" i], [data-testid*="dropzone" i], [data-testid*="drop-zone" i], [class*="drop-target" i], [class*="dropzone" i], [class*="drop-zone" i], [class*="droppable" i]');
     // Keep recognizing a drag task after items have moved out of the source bank.
     const actualDrag = dragWidgetPresent && (orderWidgetPresent || dragDrop.items.length > 0 || dragDrop.targets.length > 0);
+    const dropdownWidgetPresent = !!root.querySelector('select, .perseus-widget-dropdown, [role="combobox"], [aria-haspopup="listbox"]');
+    const mutableAnswerState = dragWidgetPresent || dropdownWidgetPresent;
     const editableTable = tables.some(t => t.editableCount > 0) || !!root.querySelector('.perseus-widget-table');
     let type = 'unknown';
     if (actualDrag) type = 'drag_drop';
@@ -416,7 +422,7 @@
       // Paragraph text is extracted with interactive widgets masked out.
       paragraphs,
       // Dropdown menus and draggable banks are mutable answer state, not question identity.
-      choices: dragWidgetPresent ? [] : choiceData.labels,
+      choices: mutableAnswerState && !choiceContainerPresent ? [] : choiceData.labels,
       inputStructure: inputs.map(x => ({ index: x.index, kind: x.kind, inTable: x.inTable })),
       tables: tables.map(t => ({
         source: t.source, rowCount: t.rowCount, colCount: t.colCount, editableCount: t.editableCount,
@@ -431,14 +437,19 @@
       })),
       // Deliberately exclude item/target labels and counts: those change during drag-and-drop.
       drag: { present: dragWidgetPresent, orderWidgetPresent, mode: dragWidgetPresent ? dragDrop.mode : '' },
-      taskEvidence: { choiceTask, checkboxes, choiceContainerPresent, choicePromptIntent, graphActionIntent, explicitGraph, explicitMatrix, editableTable, dragWidgetPresent }
+      taskEvidence: {
+        choiceTask: mutableAnswerState && !choiceContainerPresent ? false : choiceTask,
+        checkboxes: mutableAnswerState && !choiceContainerPresent ? false : checkboxes,
+        choiceContainerPresent, choicePromptIntent, graphActionIntent, explicitGraph, explicitMatrix, editableTable,
+        dragWidgetPresent, dropdownWidgetPresent
+      }
     }).slice(0, 16000);
 
     return {
       root, paragraphs, renderedText, prompt: snapshot, type,
       choices: choiceData.labels, choiceKind: choiceData.kind, inputs, tables, visuals: visualHints,
       choiceNodes: choiceData.nodes || [], hasVisualChoices: (choiceData.graphicFlags || []).some(Boolean),
-      dragDrop, layout: { explicitGraph, explicitMatrix, gridCells, editableTable, choiceContainerPresent, choicePromptIntent, graphActionIntent, dragWidgetPresent }, fingerprint,
+      dragDrop, layout: { explicitGraph, explicitMatrix, gridCells, editableTable, choiceContainerPresent, choicePromptIntent, graphActionIntent, dragWidgetPresent, dropdownWidgetPresent }, fingerprint,
     };
   }
 
@@ -592,11 +603,16 @@
   function recoverAnswerFromExplanation(data, q) {
     const d = data && typeof data === 'object' ? { ...data } : { answer: String(data || '') };
     const explanation = norm(d.explanation || '');
+    if (d.graph && !graphAnswerAllowed(q) && !norm(d.answer || d.math || '') && explanation) {
+      const match = explanation.match(/(?:the\s+)?(?:correct\s+)?(?:answer|result|solution|value|coordinate|point|equation)\s*(?:is|would be|should be|equals?|=|:)\s*([^.;\n]{1,180})/i);
+      if (match) d.answer = norm(match[1]);
+    }
     if ((q.choices || []).length >= 2) {
       let index = idxFor(d, q.choices);
       if (index < 0) {
         const combined = `${norm(d.answer || '')}\n${explanation}`;
-        const letter = combined.match(/\b(?:the\s+)?(?:correct\s+)?(?:answer|option|choice)\s*(?:is|:|=)?\s*\(?([A-Z])\)?(?=$|[).,:;\s])/i);
+        const letter = combined.match(/\b(?:the\s+)?(?:correct\s+)?(?:answer|option|choice)\s*(?:is|:|=)?\s*\(?([A-Z])\)?(?=$|[).,:;\s])/i) ||
+          combined.match(/\b(?:option|choice)\s*\(?([A-Z])\)?\s+(?:is|was)\s+(?:the\s+)?(?:correct|best|right)\b/i);
         if (letter) {
           const candidate = letter[1].toUpperCase().charCodeAt(0) - 65;
           if (candidate >= 0 && candidate < q.choices.length) index = candidate;
