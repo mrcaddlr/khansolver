@@ -1088,8 +1088,11 @@
   function useful(d,q){if(!d||typeof d!=='object')return false;if(norm(d.finalAnswer||d.answer||d.math||''))return true;if(d.correctOptionIndex!==undefined&&d.correctOptionIndex!==null&&d.correctOptionIndex!==''&&Number.isInteger(Number(d.correctOptionIndex)))return true;if(Array.isArray(d.correctOptionIndices)&&d.correctOptionIndices.length)return true;if(Array.isArray(d.inputAnswers)&&d.inputAnswers.length)return true;if(d.table?.fills?.length||d.grid?.selectedCells?.length||d.graph?.points?.length||d.graph?.equation||d.dragDrop?.placements?.length||d.dragDrop?.order?.length)return true;return false;}
   function covers(d,q){if(independentInputs(q).length){const fields=independentInputs(q),items=Array.isArray(d.inputAnswers)?d.inputAnswers:[];const ids=new Set(items.filter(x=>norm(x?.answer??x?.value??x)).map((x,pos)=>Number.isInteger(Number(x?.index))?Number(x.index):(fields[pos]?.index??pos)));if(fields.some(f=>!ids.has(f.index)))return false;}if(q.choices.length>=2){if(q.type==='multi_select'){if(!Array.isArray(d.correctOptionIndices)||!d.correctOptionIndices.length)return false;}else if(idxFor(d,q.choices)<0)return false;}if(q.type==='drag_drop'&&!((d.dragDrop?.placements?.length||0)||(d.dragDrop?.order?.length||0)))return false;if(q.type==='table'&&q.tables.some(t=>t.editableCount>0)&&!d.table?.fills?.length)return false;return true;}
 
-  function requestSolution(q){const id=++state.requestId,base=state.serverUrl.replace(/\/+$/,'');let session='';let warning='';state.loading=true;updateButtons();$('#result').innerHTML='<div class="placeholder">Reading the real controls and solving with Big Pickle'+(state.doubleCheck?', then checking the answer…':'…')+'</div>';
-    const cleanup=()=>deleteSession(base,session);const fail=msg=>{cleanup();if(id!==state.requestId)return;state.loading=false;updateButtons();showError(msg);};const finish=(d,status,note='')=>{cleanup();if(id!==state.requestId)return;state.loading=false;updateButtons();$('#result').innerHTML=renderAnswer(d,q,{status,note:[warning,note].filter(Boolean).join(' ')});};
+  function requestSolution(q){const id=++state.requestId,base=state.serverUrl.replace(/\/+$/,'');let session='';let warning='';let watchdog=0;state.loading=true;updateButtons();$('#result').innerHTML='<div class="placeholder">Reading the real controls and solving with Big Pickle'+(state.doubleCheck?', then checking the answer…':'…')+'</div>';
+    const cleanup=()=>{if(watchdog){clearTimeout(watchdog);watchdog=0;}deleteSession(base,session);};
+    const fail=msg=>{cleanup();if(id!==state.requestId)return;state.loading=false;updateButtons();showError(msg);};
+    const finish=(d,status,note='')=>{cleanup();if(id!==state.requestId)return;state.loading=false;updateButtons();$('#result').innerHTML=renderAnswer(d,q,{status,note:[warning,note].filter(Boolean).join(' ')});};
+    watchdog=setTimeout(()=>{if(id!==state.requestId)return;cleanup();state.requestId++;state.loading=false;updateButtons();showError('This solve request timed out after four minutes. Press Solve question to start a fresh request; you should not need Clear solution to recover the panel.');},SOLUTION_WATCHDOG_MS);
     GM.xmlHttpRequest({method:'POST',url:`${base}/session`,headers:{'Content-Type':'application/json'},data:JSON.stringify({title:'KA Visual Solver · verified solution'}),timeout:TIMEOUT,onload:res=>{if(res.status<200||res.status>=300){fail(`OpenCode session creation failed (HTTP ${res.status}). Check the server URL and terminal.`);return;}let p;try{p=JSON.parse(res.responseText||'{}');}catch(_){fail('OpenCode returned an unreadable session response.');return;}session=getSessionId(p);if(!session){fail('OpenCode did not return a session ID. Check the local OpenCode API version.');return;}
       imageFiles(q).then(({files,warning:w})=>{if(id!==state.requestId){cleanup();return;}warning=w;$('#result').innerHTML=`<div class="placeholder">Solving with Big Pickle${files.length?` and ${files.length} question image(s)`:''}${state.doubleCheck?' · second-pass verification…':''}</div>`;
         const verify=(candidate,attempt=0)=>{if(!state.doubleCheck){finish(candidate,'skipped','Double-check is disabled; showing the first-pass answer.');return;}postMessage(base,session,verificationPrompt(q,candidate),[],{onload:r=>{if(id!==state.requestId){cleanup();return;}if(!state.doubleCheck){finish(candidate,'skipped','Double-check was turned off while solving; showing the first-pass answer.');return;}try{let checked=parseResponse(r,'verification');checked=normalizeForRender(checked,q);if(useful(checked,q)&&covers(checked,q))finish(checked,'checked');else if(attempt<1)verify(useful(checked,q)?checked:candidate,attempt+1);else finish(candidate,'failed','The verifier did not return a complete answer for every visible part; showing the first pass.');}catch(e){finish(candidate,'failed',`Second-pass check failed; showing the first pass. ${e.message||e}`);}},onerror:()=>finish(candidate,'failed','Second-pass check could not reach OpenCode; showing the first pass.'),ontimeout:()=>finish(candidate,'failed','Second-pass check timed out; showing the first pass.')});};
@@ -1099,8 +1102,58 @@
     },onerror:()=>fail(`Could not connect to ${base}. Start OpenCode with: opencode serve --hostname 127.0.0.1 --port 4096`),ontimeout:()=>fail('OpenCode did not respond in time. Check that the local server is running.')});
   }
 
-  function refreshQuestion(force=false){if(!uiRoot)return;const next=extractQuestion();if(!next){if(!state.question)$('#question').textContent='Waiting for exercise content…';return;}const changed=next.fingerprint!==state.fingerprint;state.question=next;if(!changed){if(force){const preview=next.prompt;$('#question').textContent=preview.length>1400?preview.slice(0,1400)+'…':preview;}updateButtons();return;}
-    state.fingerprint=next.fingerprint;state.requestId++;state.loading=false;const preview=next.prompt;$('#question').textContent=preview.length>1400?preview.slice(0,1400)+'…':preview;state.lastError='';$('#result').innerHTML='<div class="placeholder">New question detected. Ready to solve.</div>';if(state.auto)requestSolution(next);updateButtons();}
+  function questionCoreFingerprint(q) {
+    const mutable = !!(q.layout && (q.layout.dragWidgetPresent || q.layout.dropdownWidgetPresent));
+    return JSON.stringify({
+      route: location.pathname + location.search,
+      // Question text is collected with input/dropdown/drag widgets masked.
+      stem: (q.paragraphs || []).map(text => norm(text).replace(/\s+/g, ' ')),
+      // Dropdown and drag labels/values can change as the learner answers.
+      choices: mutable ? [] : (q.choices || []),
+      inputs: (q.inputs || []).map(x => ({ kind: x.kind, inTable: !!x.inTable })),
+      tables: (q.tables || []).map(t => ({
+        rows: t.rowCount, cols: t.colCount,
+        headers: (t.rows || []).map(row => row.filter(c => c.header).map(c => c.text))
+      })),
+      images: (q.visuals || []).filter(v => v.kind === 'image').map(v => ({
+        alt: v.alt || '', src: String(v.src || '').split('?')[0].slice(0, 220)
+      })),
+      interaction: q.layout && q.layout.dragWidgetPresent ? 'drag' : q.layout && q.layout.dropdownWidgetPresent ? 'dropdown' : q.type
+    });
+  }
+
+  function refreshQuestion(force=false) {
+    if (!uiRoot) return;
+    const next = extractQuestion();
+    if (!next) {
+      if (!state.question) $('#question').textContent = 'Waiting for exercise content…';
+      return;
+    }
+    const core = questionCoreFingerprint(next);
+    const changed = core !== state.coreFingerprint;
+    state.question = next;
+    // Live dropdown changes, dragged items and graph-widget redraws should not invalidate a solution.
+    if (!changed) {
+      state.fingerprint = next.fingerprint;
+      if (force) {
+        const preview = next.prompt;
+        $('#question').textContent = preview.length > 1400 ? preview.slice(0, 1400) + '…' : preview;
+      }
+      updateButtons();
+      return;
+    }
+    state.coreFingerprint = core;
+    state.fingerprint = next.fingerprint;
+    state.requestId++;
+    state.loading = false;
+    const preview = next.prompt;
+    $('#question').textContent = preview.length > 1400 ? preview.slice(0, 1400) + '…' : preview;
+    state.lastError = '';
+    $('#result').innerHTML = '<div class="placeholder">New question detected. Ready to solve.</div>';
+    if (state.auto) requestSolution(next);
+    updateButtons();
+  }
+
   function observePage(){let timer=0;const schedule=()=>{clearTimeout(timer);timer=setTimeout(()=>refreshQuestion(false),480);};const observer=new MutationObserver(schedule);observer.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:false});window.addEventListener('popstate',()=>setTimeout(()=>refreshQuestion(true),450));let previous=location.href;setInterval(()=>{if(location.href!==previous){previous=location.href;state.fingerprint='';setTimeout(()=>refreshQuestion(true),500);}},900);setTimeout(()=>refreshQuestion(true),1000);}
 
   buildUI(); observePage();
