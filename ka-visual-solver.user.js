@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.7.0
-// @description  Khan Academy solver using local OpenCode + Big Pickle; answer layouts are gated by real page controls.
+// @version      4.7.1
+// @description  Khan Academy solver using local OpenCode + Big Pickle; dropdown changes do not reset solutions.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -66,6 +66,7 @@
     const clone = el.cloneNode(true);
     const mask = [
       'input', 'select', 'textarea', '[contenteditable="true"]', '[role="textbox"]', '[role="combobox"]',
+      '[role="listbox"]', '[aria-haspopup="listbox"]', '[data-testid*="dropdown" i]', '[class*="dropdown" i]',
       '.mq-editable-field', '.mathquill', '.perseus-widget-input-number', '.perseus-widget-input-expression',
       '.perseus-widget-dropdown', '[draggable="true"]', '[data-rbd-draggable-id]',
       '[data-droppable-id]', '[data-drop-zone]', '[data-testid*="drop-target"]', '[data-testid*="dropzone"]',
@@ -327,7 +328,7 @@
       paragraphs,
       choices: choiceData.labels,
       type,
-      inputStructure: inputs.map(x => ({ index: x.index, label: x.label, kind: x.kind, inTable: x.inTable, options: x.options })),
+      inputStructure: inputs.map(x => ({ index: x.index, kind: x.kind, inTable: x.inTable })),
       tables: tables.map(t => ({ source: t.source, rows: t.rows.map(row => row.map(c => ({ text: c.editable ? '' : c.text, header: c.header, editable: c.editable, role: c.role }))) })),
       visuals: visualHints.map(x => ({ kind: x.kind, alt: x.alt, title: x.title, label: x.label, labels: x.labels, width: x.width, height: x.height })),
       drag: { mode: dragDrop.mode, items: dragDrop.items.map(x => x.label), targets: dragDrop.targets.map(x => x.label) },
