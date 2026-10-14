@@ -940,12 +940,81 @@
   function solveCurrent(manual){if(!state.question){showError('No exercise question detected yet. Use Refresh question after the exercise appears.');return;}if(manual&&!state.consented){if(!window.confirm('Send this visible question and its visible choices/widget labels to OpenCode using Big Pickle? It will only display a solution.'))return;state.consented=true;}requestSolution(state.question);}
 
   function base64(buffer){const bytes=new Uint8Array(buffer);let bin='';for(let i=0;i<bytes.length;i+=0x8000)bin+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));return btoa(bin);}
+  function normalizedFilename(filename,mime) {
+    const base=String(filename||'ka-question-image').replace(/\.(?:png|jpe?g|webp|gif|avif|bmp)$/i,'');
+    return base+(mime==='image/jpeg'?'.jpg':'.png');
+  }
+  function normalizeImageSource(source,filename,revokeUrl='') {
+    return new Promise(resolve=>{
+      if(!source)return resolve(null);
+      const image=new Image();
+      let settled=false;
+      const finish=value=>{
+        if(settled)return;
+        settled=true;
+        if(revokeUrl)try{URL.revokeObjectURL(revokeUrl);}catch(_){}
+        resolve(value);
+      };
+      image.onload=()=>{
+        try {
+          const naturalWidth=image.naturalWidth||image.width,naturalHeight=image.naturalHeight||image.height;
+          if(!naturalWidth||!naturalHeight)return finish(null);
+          let scale=Math.min(1,2200/Math.max(naturalWidth,naturalHeight));
+          for(let attempt=0;attempt<6;attempt++){
+            const width=Math.max(1,Math.round(naturalWidth*scale)),height=Math.max(1,Math.round(naturalHeight*scale));
+            const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+            const ctx=canvas.getContext('2d');
+            if(!ctx)return finish(null);
+            // Khan Academy diagrams often use transparent SVG/PNG backgrounds; white keeps labels legible.
+            ctx.fillStyle='#ffffff';ctx.fillRect(0,0,width,height);ctx.drawImage(image,0,0,width,height);
+            let data='';
+            try{data=canvas.toDataURL('image/png');}catch(_){return finish(null);}
+            let bytes=Math.floor(((data.split(',')[1]||'').length)*.75);
+            if(data.startsWith('data:image/png')&&bytes>0&&bytes<=MAX_IMAGE_BYTES){
+              return finish({type:'file',mime:'image/png',filename:normalizedFilename(filename,'image/png'),url:data});
+            }
+            for(const quality of [0.94,0.89,0.82]){
+              try{data=canvas.toDataURL('image/jpeg',quality);}catch(_){data='';}
+              bytes=Math.floor(((data.split(',')[1]||'').length)*.75);
+              if(data.startsWith('data:image/jpeg')&&bytes>0&&bytes<=MAX_IMAGE_BYTES){
+                return finish({type:'file',mime:'image/jpeg',filename:normalizedFilename(filename,'image/jpeg'),url:data});
+              }
+            }
+            scale*=0.78;
+          }
+          finish(null);
+        }catch(_){finish(null);}
+      };
+      image.onerror=()=>finish(null);
+      try{image.src=source;}catch(_){finish(null);}
+    });
+  }
   function loadImage(src,index){return new Promise(resolve=>{
     if(!src)return resolve(null);
-    const dm=src.match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([\s\S]+)$/i);
-    if(dm){const size=Math.floor(dm[2].length*.75);if(size>MAX_IMAGE_BYTES)return resolve(null);const mime=dm[1].toLowerCase().replace('image/jpg','image/jpeg');return resolve({type:'file',mime,filename:`ka-question-${index+1}.${mime.split('/')[1].replace('jpeg','jpg')}`,url:src});}
-    let url;try{url=new URL(src,location.href);}catch(_){return resolve(null);}if(!['http:','https:'].includes(url.protocol))return resolve(null);
-    GM.xmlHttpRequest({method:'GET',url:url.href,responseType:'arraybuffer',timeout:IMAGE_TIMEOUT,onload:r=>{try{if(r.status<200||r.status>=300||!r.response)return resolve(null);const size=r.response.byteLength;if(!size||size>MAX_IMAGE_BYTES)return resolve(null);const header=String(r.responseHeaders||'').match(/content-type\s*:\s*([^;\r\n]+)/i);let mime=(header?.[1]||'').trim().toLowerCase();if(!/^image\/(png|jpe?g|webp|gif)$/.test(mime)){const p=url.pathname.toLowerCase();mime=p.endsWith('.png')?'image/png':/\.jpe?g$/.test(p)?'image/jpeg':p.endsWith('.webp')?'image/webp':p.endsWith('.gif')?'image/gif':'';}if(!mime)return resolve(null);mime=mime.replace('image/jpg','image/jpeg');resolve({type:'file',mime,filename:`ka-question-${index+1}.${mime.split('/')[1].replace('jpeg','jpg')}`,url:`data:${mime};base64,${base64(r.response)}`});}catch(_){resolve(null);}},onerror:()=>resolve(null),ontimeout:()=>resolve(null)});
+    const filename='ka-question-'+(index+1);
+    if(/^data:image\//i.test(src)){
+      if(src.length>24000000)return resolve(null);
+      normalizeImageSource(src,filename).then(resolve);
+      return;
+    }
+    let url;try{url=new URL(src,location.href);}catch(_){return resolve(null);}
+    if(!['http:','https:'].includes(url.protocol))return resolve(null);
+    GM.xmlHttpRequest({method:'GET',url:url.href,responseType:'arraybuffer',timeout:IMAGE_TIMEOUT,onload:r=>{
+      try{
+        if(r.status<200||r.status>=300||!r.response)return resolve(null);
+        const size=r.response.byteLength;
+        if(!size||size>18000000)return resolve(null);
+        const header=String(r.responseHeaders||'').match(/content-type\s*:\s*([^;\r\n]+)/i);
+        let mime=(header?.[1]||'').trim().toLowerCase().split(';')[0];
+        if(!/^image\//i.test(mime)){
+          const p=url.pathname.toLowerCase();
+          mime=p.endsWith('.png')?'image/png':/\.(?:jpe?g)$/i.test(p)?'image/jpeg':p.endsWith('.webp')?'image/webp':p.endsWith('.gif')?'image/gif':p.endsWith('.avif')?'image/avif':p.endsWith('.bmp')?'image/bmp':p.endsWith('.svg')?'image/svg+xml':'';
+        }
+        if(!mime)return resolve(null);
+        const objectUrl=URL.createObjectURL(new Blob([r.response],{type:mime}));
+        normalizeImageSource(objectUrl,filename,objectUrl).then(resolve);
+      }catch(_){resolve(null);}
+    },onerror:()=>resolve(null),ontimeout:()=>resolve(null)});
   });}
   async function choiceVisualMontage(q) {
     const nodes = (q.choiceNodes || []).slice(0, 8);
