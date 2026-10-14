@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KA Visual Solver
 // @namespace    local.ka-visual-solver
-// @version      4.9.0
-// @description  Khan Academy solver with visual-choice detection for diagrams and number-line options.
+// @version      4.10.0
+// @description  Khan Academy solver with stable interaction detection and accurate multiple-choice graph handling.
 // @match        https://www.khanacademy.org/*
 // @match        https://classroom.khanacademy.org/*
 // @grant        GM.xmlHttpRequest
@@ -83,9 +83,14 @@
       'input', 'select', 'textarea', '[contenteditable="true"]', '[role="textbox"]', '[role="combobox"]',
       '[role="listbox"]', '[aria-haspopup="listbox"]', '[data-testid*="dropdown" i]', '[class*="dropdown" i]',
       '.mq-editable-field', '.mathquill', '.perseus-widget-input-number', '.perseus-widget-input-expression',
-      '.perseus-widget-dropdown', '[draggable="true"]', '[data-rbd-draggable-id]',
-      '[data-droppable-id]', '[data-drop-zone]', '[data-testid*="drop-target"]', '[data-testid*="dropzone"]',
-      '[data-testid*="drop-zone"]', '[class*="droppable"]', '[class*="drop-target"]', '[class*="dropzone"]'
+      '.perseus-widget-dropdown', '.perseus-widget-orderer button', '.perseus-widget-orderer [role="button"]',
+      '[data-testid*="orderer" i] button', '[data-testid*="orderer" i] [role="button"]',
+      '[role="option"]', '[role="listbox"]', '[aria-haspopup="listbox"]',
+      '[draggable="true"]', '[aria-roledescription*="draggable" i]', '[data-rbd-draggable-id]',
+      '[data-droppable-id]', '[data-drop-zone]', '[aria-dropeffect]',
+      '[data-testid*="drop-target" i]', '[data-testid*="dropzone" i]',
+      '[data-testid*="drop-zone" i]', '[class*="droppable" i]', '[class*="drop-target" i]',
+      '[class*="dropzone" i]', '[class*="drop-zone" i]'
     ].join(',');
     const nodes = [...clone.querySelectorAll(mask)];
     nodes.filter(n => !nodes.some(other => other !== n && other.contains(n)))
@@ -145,7 +150,7 @@
 
   function choiceScope(el) {
     if (!el) return null;
-    return el.closest('.perseus-widget-radio-option, .perseus-radio-option, .perseus-widget-checkbox-option, [role="radio"], [role="checkbox"], [data-testid*="choice"]')
+    return el.closest('.perseus-widget-radio-option, .perseus-radio-option, .perseus-widget-checkbox-option, [role="radio"], [role="checkbox"], [data-testid*="choice" i], [data-testid*="radio-option" i], [class*="radio-option" i], [data-testid*="answer-choice" i], [class*="answer-choice" i], [class*="answerChoice" i]')
       || el.labels?.[0] || el;
   }
 
@@ -161,36 +166,56 @@
     return norm(clone.innerText || clone.textContent || '').slice(0, 500);
   }
 
+  function makeChoiceData(nodes, kind) {
+    nodes = nodes.filter(visible).filter(el => !nodes.some(other => other !== el && other.contains(el))).slice(0, 32);
+    if (nodes.length < 2) return null;
+    const scopes = nodes.map(choiceScope);
+    const graphicFlags = scopes.map(choiceHasGraphic);
+    const labels = scopes.map((scope, index) => {
+      const letter = String.fromCharCode(65 + index);
+      const text = choiceTextWithoutGraphics(scope);
+      if (graphicFlags[index]) {
+        // Preserve each option even when SVGs repeat the same number-line tick labels.
+        return text ? `Option ${letter}: ${text}` : `Option ${letter} (graphic choice)`;
+      }
+      return choiceLabel(nodes[index]) || text || `Option ${letter}`;
+    });
+    return { labels, kind, nodes: scopes, graphicFlags };
+  }
+
   function collectChoices(root) {
     if (!root) return { labels: [], kind: '', nodes: [], graphicFlags: [] };
     const radioSelectors = [
-      '.perseus-widget-radio-option', '.perseus-radio-option', '[role="radio"]', 'input[type="radio"]', '[data-testid*="choice"]'
+      '.perseus-widget-radio-option', '.perseus-radio-option', '[role="radio"]', 'input[type="radio"]',
+      '[data-testid*="choice" i]', '[data-testid*="radio-option" i]', '[class*="radio-option" i]',
+      '[data-testid*="answer-choice" i]', '[class*="answer-choice" i]', '[data-testid*="answerChoice" i]',
+      '[class*="answerChoice" i]', 'button[aria-pressed]', '[role="button"][aria-pressed]'
     ];
     const checkboxSelectors = [
-      '.perseus-widget-checkbox-option', '[role="checkbox"]', 'input[type="checkbox"]'
+      '.perseus-widget-checkbox-option', '[role="checkbox"]', 'input[type="checkbox"]',
+      '[data-testid*="checkbox-option" i]', '[class*="checkbox-option" i]'
     ];
     for (const [kind, selectors] of [['radio', radioSelectors], ['checkbox', checkboxSelectors]]) {
-      let nodes = [];
       for (const sel of selectors) {
-        nodes = [...root.querySelectorAll(sel)].filter(visible);
-        if (nodes.length >= 2) break;
+        const nodes = [...root.querySelectorAll(sel)].filter(visible);
+        if (nodes.length < 2) continue;
+        const result = makeChoiceData(nodes, kind);
+        if (result) return result;
       }
-      nodes = nodes.filter(el => !nodes.some(other => other !== el && other.contains(el)));
-      if (nodes.length < 2) continue;
+    }
 
-      nodes = nodes.slice(0, 32);
-      const scopes = nodes.map(choiceScope);
-      const graphicFlags = scopes.map(choiceHasGraphic);
-      const labels = scopes.map((scope, index) => {
-        const letter = String.fromCharCode(65 + index);
-        const text = choiceTextWithoutGraphics(scope);
-        if (graphicFlags[index]) {
-          // Preserve each option even when SVGs repeat the same number-line tick labels.
-          return text ? `Option ${letter}: ${text}` : `Option ${letter} (graphic choice)`;
-        }
-        return choiceLabel(nodes[index]) || text || `Option ${letter}`;
-      });
-      return { labels, kind, nodes: scopes, graphicFlags };
+    // Fallback for radio-group markup whose option wrappers don't use Perseus's usual classes.
+    const groups = [...root.querySelectorAll('.perseus-widget-radio, [role="radiogroup"], [data-testid*="radio-group" i], [class*="radio-group" i]')].filter(visible);
+    for (const group of groups) {
+      let nodes = [...group.querySelectorAll('input[type="radio"], [role="radio"], button, [role="button"], label, [tabindex]')].filter(visible);
+      nodes = nodes.filter(el => !nodes.some(other => other !== el && other.contains(el)));
+      nodes = nodes.filter(el => choiceTextWithoutGraphics(el) || choiceHasGraphic(el));
+      const result = makeChoiceData(nodes, 'radio');
+      if (result) return result;
+
+      const directChildren = [...group.children].filter(visible).filter(el => choiceTextWithoutGraphics(el) || choiceHasGraphic(el));
+      const childResult = makeChoiceData(directChildren, 'radio');
+      if (childResult) return childResult;
     }
     return { labels: [], kind: '', nodes: [], graphicFlags: [] };
   }
@@ -319,9 +344,9 @@
     const dragDrop = collectDragDrop(root);
     const outsideInputs = inputs.filter(input => !input.inTable);
 
-    // The exercise DOM, not the model's JSON, decides which visualization is allowed.
-    // A graph/SVG inside an answer option is answer-choice artwork, not a graphing task.
-    const explicitGraph = !choiceTask && !!root.querySelector('.perseus-widget-interactive-graph, .graphie, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
+    // A rendered Graphie can be static question context. Only a real interactive-graph
+    // widget or an explicit graph-input control is permission to draw a graph preview.
+    const explicitGraph = !choiceTask && !!root.querySelector('.perseus-widget-interactive-graph, [data-testid*="interactive-graph"], [data-testid*="graph-input"]');
     const gridElement = root.querySelector('.perseus-widget-matrix, [role="grid"]');
     const explicitMatrix = !!gridElement;
     const gridCellNodes = gridElement ? [...gridElement.querySelectorAll('[role="gridcell"], [class*="cell"]')].filter(visible).filter(el => ![...el.querySelectorAll('[role="gridcell"], [class*="cell"]')].some(child => visible(child))) : [];
@@ -349,7 +374,10 @@
         }
       }
     }
-    const actualDrag = dragDrop.items.length >= 2 && (dragDrop.mode === 'order' || dragDrop.targets.length > 0 || !!root.querySelector('[draggable="true"], [data-rbd-draggable-id], [aria-roledescription*="draggable" i]'));
+    const orderWidgetPresent = !!root.querySelector('.perseus-widget-orderer, [data-testid*="orderer" i], [class*="sortable"]');
+    const dragWidgetPresent = orderWidgetPresent || !!root.querySelector('[draggable="true"], [aria-roledescription*="draggable" i], [data-rbd-draggable-id], [data-droppable-id], [data-drop-zone], [data-testid*="drop-target" i], [data-testid*="dropzone" i], [data-testid*="drop-zone" i], [class*="drop-target" i], [class*="dropzone" i], [class*="drop-zone" i], [class*="droppable" i]');
+    // Keep recognizing a drag task after items have moved out of the source bank.
+    const actualDrag = dragWidgetPresent && (orderWidgetPresent || dragDrop.items.length > 0 || dragDrop.targets.length > 0);
     const editableTable = tables.some(t => t.editableCount > 0) || !!root.querySelector('.perseus-widget-table');
     let type = 'unknown';
     if (actualDrag) type = 'drag_drop';
@@ -373,10 +401,26 @@
       paragraphs,
       choices: choiceData.labels,
       type,
+      // Keep only control structure. Selected dropdown values and changing option lists are state, not a new question.
       inputStructure: inputs.map(x => ({ index: x.index, kind: x.kind, inTable: x.inTable })),
-      tables: tables.map(t => ({ source: t.source, rows: t.rows.map(row => row.map(c => ({ text: c.editable ? '' : c.text, header: c.header, editable: c.editable, role: c.role }))) })),
-      visuals: visualHints.map(x => ({ kind: x.kind, alt: x.alt, title: x.title, label: x.label, labels: x.labels, width: x.width, height: x.height })),
-      drag: { mode: dragDrop.mode, items: dragDrop.items.map(x => x.label), targets: dragDrop.targets.map(x => x.label) },
+      tables: tables.map(t => ({
+        source: t.source, rowCount: t.rowCount, colCount: t.colCount, editableCount: t.editableCount,
+        rows: t.rows.map(row => row.map(c => ({
+          // Dragged text can move between cells; never fingerprint these changing placements.
+          text: actualDrag ? (c.header ? c.text : '') : (c.editable ? '' : c.text),
+          header: c.header, editable: c.editable, role: c.role
+        })))
+      })),
+      // SVG/canvas labels and plotted points can change as the learner interacts with a widget.
+      visuals: visualHints.map(x => ({
+        kind: x.kind,
+        alt: x.kind === 'image' ? x.alt : '',
+        title: x.kind === 'image' ? x.title : '',
+        src: x.kind === 'image' ? String(x.src || '').split('?')[0].slice(0, 240) : '',
+        width: x.width, height: x.height
+      })),
+      // Do not fingerprint labels or counts from the draggable bank: these change after each drop.
+      drag: { present: dragWidgetPresent, orderWidgetPresent, mode: dragWidgetPresent ? dragDrop.mode : '' },
       layoutEvidence: { explicitGraph, explicitMatrix, gridCells, gridRows, gridCols, editableTable },
     }).slice(0, 16000);
 
