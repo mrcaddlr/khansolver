@@ -1,6 +1,6 @@
 # KA Visual Solver
 
-Current version: **v4.13.0**.
+Current version: **v4.14.0**.
 
 A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big Pickle** for a solution, then displays the result in a small panel. It supports multiple-choice, mixed questions, answer fields, tables, drag-and-drop previews, and image-assisted questions.
 
@@ -22,6 +22,10 @@ A Khan Academy userscript that reads the visible exercise, asks **OpenCode + Big
 - Second-pass answer checking.
 - Mixed answers for exercises with both choices and fill-in fields.
 - Visible question text, answer choices, table structure, SVG/canvas hints, and attachable images in the model prompt.
+- The second-pass verifier receives the same captured image files as the solver, so it cannot silently overrule an image-based answer from a text-only snapshot.
+- Image attachments are normalized to readable PNG/JPEG files, including large images and browser-supported formats such as AVIF, rather than simply discarded for exceeding the old size limit.
+- Visual-choice montages are rendered at twice the previous resolution; when the model claims it cannot read an attached image, the solver retries with an explicit visual-reading instruction and reports persistent failures instead of trusting a guessed option.
+- Image-capture failures and skipped attachments are included in the model prompt so it can distinguish missing pixels from readable visual evidence.
 - Graphical multiple-choice options (including number-line diagrams) are preserved as separate choices, with a labeled visual montage attached for the model to compare.
 - Layouts gated by detected page controls, so an AI response alone should not create a pretend graph or grid.
 - Graph-like SVGs inside multiple-choice options are treated as option artwork, not as a request to draw a new Cartesian plane.
